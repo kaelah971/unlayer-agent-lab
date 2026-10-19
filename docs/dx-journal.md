@@ -42,3 +42,11 @@ The starter generator selected dependency versions that were incompatible with e
 
 #### What worked well
 After aligning TypeScript to 6.0.3, installation, build, and lint all passed cleanly.
+
+#### Manual editor verification
+Successfully embedded Unlayer Builder using react-email-editor 2.1.3. Added a Paragraph component through drag-and-drop and edited its text to: Hello from Unlayer Agent Lab! Verified visually in Chrome at localhost:5173. Design persistence and JSON export have not yet been tested.
+
+### Milestone 2 - Human Editing Verified
+Successfully embedded Unlayer Builder using react-email-editor 2.1.3. The editor loaded in Chrome at localhost:5173. Dragged a Paragraph component onto the canvas and changed its text to Hello from Unlayer Agent Lab!
+Result: PASS
+Next: Test the saveDesign API to retrieve the actual design JSON.
