@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
 import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
+import { describeAgent, getAgentDesign, loadAgentDesign } from './engine/unlayerAgent'
+import type { JSONTemplate } from './engine/types'
 
 function App() {
   const editorRef = useRef<EditorRef>(null)
@@ -68,9 +70,7 @@ function App() {
   const checkAgentConnection = async () => {
     setAgentStatus('Checking agent connection...')
     try {
-      const agent = (unlayer as unknown as { agent?: { describe: () => Promise<{ editors?: unknown[] }> } }).agent
-      if (!agent) throw new Error('Agent API unavailable')
-      const details = await agent.describe()
+      const details = await describeAgent()
       const count = details.editors?.length ?? 0
       setAgentStatus(count > 0 ? 'Connected to ' + count + ' agent-enabled editor(s).' : 'No agent-enabled editors found.')
     } catch (error) {
@@ -83,13 +83,7 @@ function App() {
     setProposalStatus('Preparing change...')
 
     try {
-      const agent = (unlayer as unknown as {
-        agent?: { getDesign: () => Promise<unknown> }
-      }).agent
-
-      if (!agent) throw new Error('Agent API unavailable')
-
-      const original = await agent.getDesign()
+      const original = await getAgentDesign()
       const candidate = structuredClone(original) as {
         body?: {
           rows?: Array<{
@@ -162,20 +156,7 @@ function App() {
     setProposalStatus('Checking the current design...')
 
     try {
-      const agent = (unlayer as unknown as {
-        agent?: {
-          getDesign: () => Promise<unknown>
-          loadDesign: (design: unknown) => Promise<{
-            ok: boolean
-            loaded: boolean
-            errors?: Array<{ message: string }>
-          }>
-        }
-      }).agent
-
-      if (!agent) throw new Error('Agent API unavailable')
-
-      const current = await agent.getDesign()
+      const current = await getAgentDesign()
 
       if (JSON.stringify(current) !== proposal.baseDesign) {
         setProposal(null)
@@ -192,7 +173,7 @@ function App() {
 
       setProposalStatus('Applying approved change...')
 
-      const result = await agent.loadDesign(proposal.candidateDesign)
+      const result = await loadAgentDesign(proposal.candidateDesign as JSONTemplate)
 
       if (!result.ok || !result.loaded) {
         const explanation = result.errors?.map((error) => error.message).join('; ')
