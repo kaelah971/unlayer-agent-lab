@@ -128,7 +128,9 @@ function App() {
 
       const textNode = richText.root?.children?.[0]?.children?.[0]
       const before = textNode?.text
-      const after = 'Prepared inside Unlayer Agent Lab!'
+      const after = prompt.trim()
+
+      if (!after) throw new Error('Enter replacement text first.')
 
       if (!before || !textNode || !paragraph.values.text.includes(before)) {
         throw new Error('Paragraph text structure could not be safely updated.')
@@ -234,10 +236,11 @@ function App() {
       <section aria-label='AI instructions'>
         <h2>What would you like to create?</h2>
         <p role='status'>{agentStatus}</p>
-        <textarea rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder='Describe the email you want to create...' />
+        <label htmlFor='replacement-text'>Replacement paragraph text (manual test)</label>
+        <textarea id='replacement-text' rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder='Enter replacement text for the first paragraph...' />
         <div>
           <button type='button' onClick={() => void prepareDemoEdit()}>
-            Prepare Demo Edit
+            Prepare Text Edit
           </button>
         </div>
         <p role='status'>{proposalStatus}</p>
