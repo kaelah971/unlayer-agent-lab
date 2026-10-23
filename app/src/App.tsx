@@ -1,4 +1,4 @@
-﻿import { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 
 function App() {
@@ -7,8 +7,10 @@ function App() {
   const [showDeveloper, setShowDeveloper] = useState(false)
   const [design, setDesign] = useState<unknown>(null)
   const [status, setStatus] = useState('No design captured yet.')
+  const [agentStatus, setAgentStatus] = useState('Waiting for editor...')
 
   const onReady: EmailEditorProps['onReady'] = (editor) => {
+    void checkAgentConnection()
     let saveTimer: ReturnType<typeof setTimeout> | undefined
     let listening = false
 
@@ -54,6 +56,19 @@ function App() {
     }
   }
 
+  const checkAgentConnection = async () => {
+    setAgentStatus('Checking agent connection...')
+    try {
+      const agent = (unlayer as unknown as { agent?: { describe: () => Promise<{ editors?: unknown[] }> } }).agent
+      if (!agent) throw new Error('Agent API unavailable')
+      const details = await agent.describe()
+      const count = details.editors?.length ?? 0
+      setAgentStatus(count > 0 ? 'Connected to ' + count + ' agent-enabled editor(s).' : 'No agent-enabled editors found.')
+    } catch (error) {
+      setAgentStatus(error instanceof Error ? error.message : 'Agent connection failed.')
+    }
+  }
+
   const captureDesign = () => {
     const editor = editorRef.current?.editor
     if (!editor) {
@@ -79,6 +94,7 @@ function App() {
 
       <section aria-label='AI instructions'>
         <h2>What would you like to create?</h2>
+        <p role='status'>{agentStatus}</p>
         <textarea rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder='Describe the email you want to create...' />
         <div><button type='button' disabled>Generate with AI (coming soon)</button></div>
         <p>AI generation is not connected yet. Manual editing is available below.</p>
@@ -107,6 +123,7 @@ function App() {
 }
 
 export default App
+
 
 
 
