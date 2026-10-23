@@ -6,7 +6,7 @@
  * re-implemented here.
  */
 import { describe, expect, it } from 'vitest';
-import { diffDesigns } from './designDiff';
+import { diffDesigns, inspectBlocks } from './designDiff';
 
 /* ------------------------------------------------------------------ */
 /* Fixtures                                                            */
@@ -301,5 +301,30 @@ describe('diffDesigns', () => {
 
     expect(JSON.stringify(before)).toBe(snapshotBefore);
     expect(JSON.stringify(after)).toBe(snapshotAfter);
+  });
+});
+
+describe('inspectBlocks', () => {
+  it('lists blocks with ids, types, paths, and value fields', () => {
+    const inspected = inspectBlocks(design([[para('p1', 'Hello'), image('img-9')]]));
+    expect(inspected.complete).toBe(true);
+    expect(inspected.limitations).toEqual([]);
+    expect(inspected.blocks).toHaveLength(2);
+    expect(inspected.blocks[0]).toMatchObject({
+      id: 'p1',
+      type: 'paragraph',
+      path: 'body.rows[0].columns[0].contents[0]',
+    });
+    expect(inspected.blocks[0].valueKeys).toEqual(expect.arrayContaining(['text', 'textJson']));
+    expect(inspected.blocks[1].id).toBe('img-9');
+  });
+
+  it('flags missing values objects and uninspectable designs', () => {
+    const noValues = design([[{ id: 'x1', type: 'paragraph' }]]);
+    const inspected = inspectBlocks(noValues);
+    expect(inspected.complete).toBe(false);
+    expect(inspected.blocks[0].valuesMissing).toBe(true);
+    expect(inspectBlocks(null)).toEqual({ blocks: [], limitations: expect.any(Array), complete: false });
+    expect(inspectBlocks(null).limitations.length).toBeGreaterThan(0);
   });
 });

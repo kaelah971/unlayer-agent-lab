@@ -446,3 +446,108 @@ Verified in the live app shell:
   for `UNLAYER_API_KEY` / `unlayer_sk_` (document the command:
   `grep -ri "unlayer_sk_\|UNLAYER_API_KEY" app/dist/assets/*.js`
   must print nothing).
+
+---
+
+# M6 — Developer Lab and Two-Workspace UX
+
+Totals after M6: **144 automated tests** (all previous + inspectBlocks,
+adapter schema, tabs, workspace, scenarios, evidence, snippets, API
+helpers, LabPage static render), all Node-mode Vitest, plus `tsc -b`
+and `eslint` clean. No new runtime dependencies; the editor is never
+remounted by workspace switches (single shared instance outside both
+workspace sections).
+
+## What is covered
+
+- `designDiff.test.ts` — new `inspectBlocks` suite: block inventory with
+  ids/types/paths/value keys, `valuesMissing` flag, and fail-closed
+  behavior on uninspectable input.
+- `unlayerAgent.test.ts` (new) — adapter passthrough for `describe` /
+  `getDesign` against a stubbed global; `getAgentSchema` success path;
+  honest `unsupported` error for builders without `schema()`; missing
+  agent error. Uses `globalThis` save/restore, no network.
+- `WorkspaceTabs.test.tsx` + `workspace.test.ts` — accessible contract
+  (both tabs, exactly one `aria-pressed`, `aria-controls` targets) and
+  the two-workspace guard.
+- `scenarios.test.ts` — all five fixtures assert their required
+  outcomes (ready diff shape, stale short-circuit with zero I/O,
+  policy-blocked with zero I/O, fail-closed error text, incomplete-diff
+  handling), determinism (`runAllScenarios` twice deep-equal),
+  no-`unlayer`-global isolation, unknown-id rejection.
+- `evidence.test.ts` — id/timestamp assignment and overrides,
+  key/token redaction vs prose preservation, export shape (warning,
+  generator, entry count, no designs by default), opt-in snapshot
+  inclusion with sanitization, scenario mapping.
+- `apiExplorer.test.ts` — covers both `snippets.ts` (ids, real
+  `unlayer.agent.*` calls, no URLs or secrets) and `apiExplorer.ts`
+  (editor formatting, headlines, JSON preview truncation and
+  circular-input handling).
+- `LabPage.test.tsx` — static render asserts every section heading,
+  every action button, and the honesty labels (simulated/mock wording,
+  live-only native results, sensitive-content warning, empty states).
+
+## Mocks vs real integration
+
+- Mocked: the agent port inside scenarios (recording stubs asserting
+  zero `loadDesign`/backup calls where required) and the global
+  `unlayer` in adapter tests.
+- Real: `prepareParagraphEdit`, `approveEdit`, `diffDesigns`,
+  `inspectBlocks`, `evaluatePolicies`, `createPolicyGate`,
+  `getAgentSchema` feature detection, evidence serialization, and the
+  LabPage composition itself (static render of production components).
+
+## M6 browser QA (actually performed, system Chrome headless + CDP)
+
+Method: production `vite dev` + system Chrome headless driven over CDP
+with Node's built-in WebSocket (no Playwright/Puppeteer download).
+Fresh profile per run. Recovery-session runs (2026-10-23) re-verified
+the flows below after the interrupted session; earlier-session results
+are kept only where re-confirmed.
+
+Workspace + Studio regression (re-verified):
+
+- App loads; agent connects ("Connected to 1 agent-enabled
+  editor(s)").
+- Seeded paragraph via native `agent.loadDesign` (`ok:true,
+  loaded:true`); typed replacement text; Prepare → "Proposal ready.
+  The canvas has not been changed."; Approve → "Approved change
+  applied successfully."; canvas JSON contains the approved text;
+  "Last applied change" native panel renders; switching to the Lab
+  shows the same result mirrored as "Last applied change (live)"
+  plus an `approve.applied` evidence entry.
+
+Lab flows (re-verified):
+
+- Switch Studio → Lab → Studio: `document.querySelectorAll('iframe')`
+  stays at 1 across every switch (no remount, no editor-state loss);
+  `hidden` toggles on `#workspace-studio` / `#workspace-lab`; tabs
+  expose `aria-pressed` + `aria-controls`.
+- API explorer: Check connection renders "Connected to 1
+  agent-enabled editor. Schema v28." with `#0 container=…` and
+  content types; Load schema renders the Design JSON Schema block;
+  Read current design lists blocks with ids and JSON paths
+  (seeded `seed-p` block found).
+- Scenarios: Run-all shows 5 passes, 0 failures; live canvas design
+  JSON length identical before/after (2166 → 2166 bytes) and iframe
+  count unchanged — mock isolation holds in the live page (byte
+  equality of the full JSON is asserted by unit tests, not the
+  browser run).
+- Evidence: 5 scenario entries listed; Export evidence JSON reports
+  "Exported 5 evidence entries." Export payload shape (warning +
+  entries, no design payloads by default, opt-in sanitized snapshot)
+  is asserted by `evidence.test.ts`; actual file download to disk was
+  not captured in headless mode.
+- No credentials in the DOM (`unlayer_sk_` / `UNLAYER_API_KEY`
+  absent); responsive: no horizontal overflow (`scrollWidth <=
+  innerWidth + 1`; headless minimum width 504px — true 360px
+  hardware check still manual).
+
+## Still manual / out of scope
+
+- Screen-reader pass over the Lab (tab order, alert regions).
+- Real-Unlayer live replay of fixtures (Lab replays mocks only, by
+  design); a live-builder replay toggle is M7 work.
+- Evidence persistence across reloads (in-memory, cap 100).
+- `preview(device)`, exports, undo controls, and policy playground
+  remain future work (see M7 recommendation in the milestone report).

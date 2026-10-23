@@ -50,6 +50,20 @@ export function getAgentDesign(): Promise<JSONTemplate> {
 }
 
 /**
+ * Full JSON Schema of the design this editor accepts. Present in the
+ * installed SDK types (`AgentApi.schema`), but older pinned builders may
+ * not implement it — that case throws a plain, displayable error instead
+ * of failing with `undefined is not a function`.
+ */
+export function getAgentSchema(): Promise<unknown> {
+  const schemaFn = (getAgent() as Partial<Pick<AgentApi, 'schema'>>).schema;
+  if (typeof schemaFn !== 'function') {
+    throw new Error('Agent schema API is not supported by this builder.');
+  }
+  return (schemaFn as () => Promise<unknown>)();
+}
+
+/**
  * Validates, then loads. Resolves with the full native result; on
  * `{ ok: false, loaded: false }` nothing changed — inspect `errors` and
  * retry with a fixed design.

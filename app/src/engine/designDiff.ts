@@ -152,18 +152,29 @@ interface CollectedBlock {
   index: number;
 }
 
+export interface CollectedDesign {
+  blocks: CollectedBlock[];
+  limitations: string[];
+  /** False if anything at all was ambiguous. */
+  complete: boolean;
+  /**
+   * False when the design could not be enumerated at all (non-object,
+   * missing body, non-array rows). Withholding content changes is then
+   * safer than reporting them against an unreadable baseline.
+   */
+  comparable: boolean;
+}
+
 /**
- * Compare two Unlayer design snapshots. Never throws on unexpected shapes:
- * anything ambiguous yields `complete: false` with a `limitations` entry.
+ * Enumerate every content block (rows/columns/contents, plus headers and
+ * footers) with stable paths. Never throws: ambiguity is reported, with
+ * `complete: false` and a `limitations` entry per problem.
  */
-export function diffDesigns(before: unknown, after: unknown): DesignDiff {
+export function collectBlocks(design: unknown, side: string): CollectedDesign {
+  const blocks: CollectedBlock[] = [];
   const limitations: string[] = [];
   let complete = true;
-  // False when either side cannot be enumerated at all (unrecognized
-  // structure). Content changes are then withheld entirely: reporting an
-  // "added" block against an unreadable baseline would be a guess.
   let comparable = true;
-  const changes: DesignChange[] = [];
 
   const note = (message: string): void => {
     if (!limitations.includes(message)) limitations.push(message);
@@ -173,18 +184,17 @@ export function diffDesigns(before: unknown, after: unknown): DesignDiff {
     note(message);
   };
 
-  const collect = (design: unknown, side: string): CollectedBlock[] => {
-    const blocks: CollectedBlock[] = [];
+  const collect = (): void => {
     if (!isObject(design)) {
       comparable = false;
       incompleteness(`The ${side} design is not an object; content blocks could not be compared.`);
-      return blocks;
+      return;
     }
     const body = design['body'];
     if (!isObject(body)) {
       comparable = false;
       incompleteness(`Unrecognized ${side} design structure: missing body object.`);
-      return blocks;
+      return;
     }
     const sections: Array<{ rows: unknown; prefix: string }> = [{ rows: body['rows'], prefix: 'body.rows' }];
     if (body['headers'] !== undefined) sections.push({ rows: body['headers'], prefix: 'body.headers' });
@@ -246,11 +256,69 @@ export function diffDesigns(before: unknown, after: unknown): DesignDiff {
         });
       });
     }
-    return blocks;
   };
 
-  const beforeBlocks = collect(before, 'original');
-  const afterBlocks = collect(after, 'proposed');
+  collect();
+  return { blocks, limitations, complete, comparable };
+}
+
+export interface BlockSummary {
+  id: string | null;
+  type: string | null;
+  /** Top-level `values` keys present on the block. */
+  valueKeys: string[];
+  path: string;
+  valuesMissing: boolean;
+}
+
+/**
+ * Read-only structural inventory of one design for the Developer Lab.
+ * Same enumeration as the diff engine; values themselves are summarized
+ * (keys only), never dumped.
+ */
+export function inspectBlocks(design: unknown): {
+  blocks: BlockSummary[];
+  limitations: string[];
+  complete: boolean;
+} {
+  const collected = collectBlocks(design, 'current');
+  return {
+    blocks: collected.blocks.map((block) => ({
+      id: block.id,
+      type: block.type,
+      valueKeys: Object.keys(block.values),
+      path: block.path,
+      valuesMissing: block.valuesMissing,
+    })),
+    limitations: collected.limitations,
+    complete: collected.complete,
+  };
+}
+
+/**
+ * Compare two Unlayer design snapshots. Never throws on unexpected shapes:
+ * anything ambiguous yields `complete: false` with a `limitations` entry.
+ */
+export function diffDesigns(before: unknown, after: unknown): DesignDiff {
+  const collectedBefore = collectBlocks(before, 'original');
+  const collectedAfter = collectBlocks(after, 'proposed');
+  const limitations: string[] = [...new Set([...collectedBefore.limitations, ...collectedAfter.limitations])];
+  let complete = collectedBefore.complete && collectedAfter.complete;
+  // Withheld when either side cannot be enumerated at all: reporting an
+  // "added" block against an unreadable baseline would be a guess.
+  const comparable = collectedBefore.comparable && collectedAfter.comparable;
+  const changes: DesignChange[] = [];
+
+  const note = (message: string): void => {
+    if (!limitations.includes(message)) limitations.push(message);
+  };
+  const incompleteness = (message: string): void => {
+    complete = false;
+    note(message);
+  };
+
+  const beforeBlocks = collectedBefore.blocks;
+  const afterBlocks = collectedAfter.blocks;
 
   const groupById = (blocks: CollectedBlock[]): Map<string, CollectedBlock[]> => {
     const map = new Map<string, CollectedBlock[]>();

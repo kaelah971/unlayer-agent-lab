@@ -1,5 +1,5 @@
 /**
- * Shared Agent Change Inspector (M3).
+ * Shared Agent Change Inspector (M3; renders DiffView/PolicyList since M6).
  *
  * Reusable, framework-free React: renders a prepared proposal (summary,
  * change list, Approve/Discard) plus native Unlayer results. All untrusted
@@ -14,36 +14,7 @@
  */
 import type { PreparedParagraphEdit } from '../engine/proposals';
 import type { AgentLoadDesignResult } from '../engine/types';
-
-function verdictText(verdict: string): string {
-  switch (verdict) {
-    case 'PASS':
-      return 'Passed';
-    case 'WARN':
-      return 'Warning';
-    case 'FAIL':
-      return 'Failed';
-    case 'UNKNOWN':
-      return 'Unknown';
-    default:
-      return verdict;
-  }
-}
-
-function kindText(kind: string): string {
-  switch (kind) {
-    case 'added':
-      return 'Added';
-    case 'removed':
-      return 'Removed';
-    case 'modified':
-      return 'Modified';
-    case 'moved':
-      return 'Moved';
-    default:
-      return kind;
-  }
-}
+import { DiffView, PolicyList } from './DiffView';
 
 export interface ChangeInspectorProps {
   proposal: PreparedParagraphEdit;
@@ -61,7 +32,6 @@ export function ChangeInspector({
   onApprove,
   onDiscard,
 }: ChangeInspectorProps) {
-  const { diff } = proposal;
   const errors = rejection?.errors ?? [];
 
   return (
@@ -83,65 +53,9 @@ export function ChangeInspector({
         </>
       )}
 
-      <h4>What changed</h4>
-      <p>{diff.summary}</p>
-      <p>
-        {diff.counts.added} added · {diff.counts.removed} removed · {diff.counts.modified} modified ·{' '}
-        {diff.counts.moved} moved
-      </p>
-      <p>Local structural preview. Unlayer validation and audit run only after you approve.</p>
+      <DiffView diff={proposal.diff} />
 
-      {diff.changes.length > 0 && (
-        <ul aria-label="Design changes">
-          {diff.changes.map((change, index) => (
-            <li key={`${change.kind}:${change.blockId ?? 'no-id'}:${change.path}:${index}`}>
-              <strong>{change.label}</strong> — {kindText(change.kind)}
-              {change.blockType ? ` — ${change.blockType}` : null}
-              {change.blockId ? ` “${change.blockId}”` : ' (no stable ID)'}{' '}
-              <code>{change.path}</code>
-              {change.before !== undefined || change.after !== undefined ? (
-                <span>
-                  {' '}
-                  — <span>Before: {change.before ?? '—'}</span> <span>After: {change.after ?? '—'}</span>
-                </span>
-              ) : null}
-              {change.detail ? <span> — {change.detail}</span> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {diff.limitations.length > 0 && (
-        <div>
-          <p>
-            <strong>Diff limitations:</strong> this comparison may be incomplete.
-          </p>
-          <ul>
-            {diff.limitations.map((limitation) => (
-              <li key={limitation}>{limitation}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <h4>Application policy checks</h4>
-      <p>
-        Checked locally before approval — separate from Unlayer&apos;s native validation and audit, which run
-        only after you approve.
-      </p>
-      <ul aria-label="Policy checks">
-        {proposal.policies.map((policy) => (
-          <li key={policy.ruleId}>
-            <strong>{policy.label}</strong> — {verdictText(policy.verdict)} — {policy.message}
-            {policy.blockIds.length > 0 ? <span> — Blocks: {policy.blockIds.join(', ')}</span> : null}
-          </li>
-        ))}
-      </ul>
-      {proposal.policyBlocked ? (
-        <p>
-          <strong>Approval blocked by application policy.</strong> Resolve the failing checks above.
-        </p>
-      ) : null}
+      <PolicyList policies={proposal.policies} blocked={proposal.policyBlocked} />
 
       {rejection && (
         <div role="alert">

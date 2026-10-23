@@ -8,6 +8,18 @@ import { finalizeAiGeneration } from './ai/aiProposals'
 import type { AgentLoadDesignResult } from './engine/types'
 import { ChangeInspector, NativeResultPanel } from './shared/ChangeInspector'
 import { InspectorErrorBoundary } from './shared/ErrorBoundary'
+import { WorkspaceTabs } from './shared/WorkspaceTabs'
+import { LabPage } from './lab/LabPage'
+import { isWorkspace, type Workspace } from './lab/workspace'
+import { createEvidenceEntry, type EvidenceEntry } from './lab/evidence'
+import type { PolicyResult } from './engine/policies'
+
+const policyVerdictOf = (policies: PolicyResult[]): 'pass' | 'warn' | 'fail' | 'unknown' => {
+  if (policies.some((policy) => policy.verdict === 'FAIL')) return 'fail'
+  if (policies.some((policy) => policy.verdict === 'UNKNOWN')) return 'unknown'
+  if (policies.some((policy) => policy.verdict === 'WARN')) return 'warn'
+  return 'pass'
+}
 
 function App() {
   const editorRef = useRef<EditorRef>(null)
@@ -28,6 +40,8 @@ function App() {
   const [aiRunning, setAiRunning] = useState(false)
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
   const aiAbort = useRef<AbortController | null>(null)
+  const [workspace, setWorkspace] = useState<Workspace>('studio')
+  const [evidence, setEvidence] = useState<EvidenceEntry[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -39,6 +53,14 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  const recordEvidence = (entry: Omit<EvidenceEntry, 'id' | 'recordedAt'>): void => {
+    setEvidence((previous) => [...previous.slice(-99), createEvidenceEntry(entry)])
+  }
+
+  const changeWorkspace = (next: Workspace): void => {
+    if (isWorkspace(next)) setWorkspace(next)
+  }
 
   const onReady: EmailEditorProps['onReady'] = (editor) => {
     void checkAgentConnection()
@@ -156,6 +178,12 @@ function App() {
       if (outcome.status === 'stale') {
         setProposal(null)
         setRejection(null)
+        recordEvidence({
+          operation: 'approve.stale',
+          source: 'live',
+          result: 'info',
+          summary: 'Stale proposal discarded after the canvas changed.',
+        })
         setProposalStatus(
           'The design changed after this proposal was prepared. Prepare a new proposal.'
         )
@@ -164,6 +192,15 @@ function App() {
 
       if (outcome.status === 'blocked') {
         setProposal({ ...proposal, policies: outcome.policies, policyBlocked: true })
+        recordEvidence({
+          operation: 'approve.blocked',
+          source: 'live',
+          result: 'fail',
+          summary: 'Approval blocked by application policy.',
+          diffSummary: proposal.diff.summary,
+          policyVerdict: 'blocked',
+          native: null,
+        })
         setProposalStatus(
           'Blocked by application policy. Review the failing checks above.'
         )
@@ -172,11 +209,30 @@ function App() {
 
       if (outcome.status === 'rejected') {
         setRejection(outcome.native)
+        recordEvidence({
+          operation: 'approve.rejected',
+          source: 'live',
+          result: 'error',
+          summary: outcome.message,
+          diffSummary: proposal.diff.summary,
+          policyVerdict: policyVerdictOf(proposal.policies),
+          native: { ok: outcome.native.ok, loaded: outcome.native.loaded, errorCount: outcome.native.errorCount },
+          errors: outcome.native.errors.map((error) => ({ message: error.message })),
+        })
         throw new Error(outcome.message)
       }
 
       setRejection(null)
       setLastApplied(outcome.native)
+      recordEvidence({
+        operation: 'approve.applied',
+        source: 'live',
+        result: 'pass',
+        summary: 'Approved change applied to the canvas.',
+        diffSummary: proposal.diff.summary,
+        policyVerdict: policyVerdictOf(proposal.policies),
+        native: { ok: outcome.native.ok, loaded: outcome.native.loaded, errorCount: outcome.native.errorCount },
+      })
       setProposal(null)
       setProposalStatus('Approved change applied successfully.')
     } catch (error) {
@@ -269,13 +325,14 @@ function App() {
     <main>
       <header>
         <h1>Unlayer Agent Lab</h1>
+        <WorkspaceTabs active={workspace} onChange={changeWorkspace} />
         <button type='button' aria-pressed={showDeveloper} onClick={() => setShowDeveloper((value) => !value)}>
           {showDeveloper ? 'Hide Developer Mode' : 'Developer Mode'}
         </button>
       </header>
       <p>Human creativity meets agent-powered editing.</p>
 
-      <section aria-label='AI instructions'>
+      <section aria-label='AI instructions' id='workspace-studio' hidden={workspace !== 'studio'}>
         <h2>What would you like to create?</h2>
         <p role='status'>{agentStatus}</p>
         <label htmlFor='replacement-text'>Replacement paragraph text (manual test)</label>
@@ -331,6 +388,19 @@ function App() {
           </div>
           {aiStatus && <p role='status'>{aiStatus}</p>}
         </div>
+      </section>
+
+      <section aria-label='Developer Lab' id='workspace-lab' hidden={workspace !== 'lab'}>
+        <h2>Developer Lab</h2>
+        <p>Integration playground: inspect live agent operations, replay deterministic scenarios, and export debugging evidence. Scenario runs are simulated and never touch the canvas.</p>
+        <LabPage
+          proposal={proposal}
+          lastApplied={lastApplied}
+          rejection={rejection}
+          evidence={evidence}
+          onRecordEvidence={recordEvidence}
+          onClearEvidence={() => setEvidence([])}
+        />
       </section>
 
       <section aria-label='Visual editor'>
