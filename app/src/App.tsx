@@ -87,7 +87,7 @@ function App() {
       <section aria-label='Visual editor'>
         <h2>Visual Editor</h2>
         <p role='status'>{status}</p>
-        <EmailEditor ref={editorRef} onReady={onReady} minHeight='650px' />
+        <EmailEditor ref={editorRef} onReady={onReady} options={{ version: 'latest' }} minHeight='650px' />
       </section>
 
       {showDeveloper && (
@@ -107,6 +107,7 @@ function App() {
 }
 
 export default App
+
 
 
 
