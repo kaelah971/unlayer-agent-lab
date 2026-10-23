@@ -53,6 +53,13 @@ interface LexicalText {
   };
 }
 
+/** Where a proposal came from. Manual text edits carry before/after
+ * paragraph text; AI proposals carry the instruction (the diff carries
+ * the substance). */
+export type ProposalSource =
+  | { kind: 'manual-text' }
+  | { kind: 'ai'; mode: 'create' | 'edit'; instruction: string };
+
 /** A prepared, unapplied edit. The canvas is unchanged until approval. */
 export interface PreparedParagraphEdit {
   before: string;
@@ -63,6 +70,8 @@ export interface PreparedParagraphEdit {
   /** Structured local diff. Computed at prepare time; Unlayer validation
    * and audit run only after approval (see `approveEdit`). */
   diff: DesignDiff;
+  /** How this proposal was produced (manual edit vs AI generation). */
+  source: ProposalSource;
   /** Application policy findings at prepare time (pre-approval advice).
    * Unlayer's native validation/audit run only after approval. */
   policies: PolicyResult[];
@@ -172,6 +181,7 @@ export function prepareParagraphEdit(
     diff: diffDesigns(original, candidateDesign),
     policies: evaluation.results,
     policyBlocked: evaluation.blocked,
+    source: { kind: 'manual-text' },
   };
 }
 

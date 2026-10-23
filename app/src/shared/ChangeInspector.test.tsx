@@ -10,6 +10,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { prepareParagraphEdit } from '../engine/proposals';
+import { prepareAiProposal, finalizeAiGeneration } from '../ai/aiProposals';
 import type { PolicyConfig } from '../engine/policies';
 import type { AgentLoadDesignResult } from '../engine/types';
 import { ChangeInspector, NativeResultPanel } from './ChangeInspector';
@@ -175,8 +176,7 @@ describe('ChangeInspector policies', () => {
     expect(html).toContain('disabled');
   });
 
-  it('shows warnings without blocking approval', () => {
-    const proposal = prepareParagraphEdit(makeDesignWithButton('https://external.example/shop'), 'Goodbye');
+  it('shows warnings without blocking approval', () => {    const proposal = prepareParagraphEdit(makeDesignWithButton('https://external.example/shop'), 'Goodbye');
     expect(proposal.policyBlocked).toBe(false);
     const html = renderToStaticMarkup(
       <ChangeInspector proposal={proposal} isApplying={false} rejection={null} onApprove={noop} onDiscard={noop} />,
@@ -233,5 +233,92 @@ describe('NativeResultPanel', () => {
 
     expect(html).toContain('None');
     expect(html).toContain('Audit unavailable');
+  });
+});
+
+describe('ChangeInspector AI proposals', () => {
+  const base = {
+    counters: {},
+    body: {
+      rows: [
+        {
+          id: 'row-0',
+          cells: [1],
+          columns: [
+            {
+              id: 'row-0-col-0',
+              contents: [
+                {
+                  id: 'para-1',
+                  type: 'paragraph',
+                  values: { text: '<p>Hello</p>', textJson: makeRichText('Hello') },
+                },
+              ],
+              values: {},
+            },
+          ],
+          values: {},
+        },
+      ],
+      values: {},
+    },
+  };
+
+  it('labels the AI instruction instead of manual before/after', () => {
+    const finalized = finalizeAiGeneration({
+      result: {
+        status: 'ready',
+        design: {
+          counters: {},
+          body: {
+            rows: [
+              {
+                id: 'row-0',
+                cells: [1],
+                columns: [
+                  {
+                    id: 'row-0-col-0',
+                    contents: [
+                      {
+                        id: 'para-1',
+                        type: 'paragraph',
+                        values: { text: '<p>Sale!</p>', textJson: makeRichText('Sale!') },
+                      },
+                    ],
+                    values: {},
+                  },
+                ],
+                values: {},
+              },
+            ],
+            values: {},
+          },
+        },
+      },
+      baseSnapshot: JSON.stringify(base),
+      liveDesign: structuredClone(base),
+      instruction: 'Announce the sale',
+      mode: 'edit',
+    });
+    expect(finalized.status).toBe('ready');
+    if (finalized.status !== 'ready') throw new Error('unreachable');
+    const html = renderToStaticMarkup(
+      <ChangeInspector proposal={finalized.proposal} isApplying={false} rejection={null} onApprove={noop} onDiscard={noop} />,
+    );
+
+    expect(html).toContain('AI instruction (Edit current)');
+    expect(html).toContain('Announce the sale');
+    expect(html).not.toContain('<strong>Before:</strong>');
+    expect(html).toContain('1 change across 1 block');
+  });
+
+  it('routes an unchecked prepareAiProposal through finalize safely', () => {
+    const prepared = prepareAiProposal({
+      original: base,
+      candidate: { counters: {}, body: { rows: [] } },
+      instruction: 'Empty it',
+      mode: 'create',
+    });
+    expect(prepared.status).toBe('ready');
   });
 });

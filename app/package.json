@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test": "vitest",
     "test:run": "vitest run",
+    "server": "node server/ai-server.ts",
     "preview": "vite preview"
   },
   "dependencies": {

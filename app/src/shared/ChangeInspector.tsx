@@ -67,12 +67,21 @@ export function ChangeInspector({
   return (
     <div>
       <h3>Proposed Change</h3>
-      <p>
-        <strong>Before:</strong> {proposal.before}
-      </p>
-      <p>
-        <strong>After:</strong> {proposal.after}
-      </p>
+      {proposal.source.kind === 'ai' ? (
+        <p>
+          <strong>AI instruction ({proposal.source.mode === 'create' ? 'Create new' : 'Edit current'}):</strong>{' '}
+          {proposal.after}
+        </p>
+      ) : (
+        <>
+          <p>
+            <strong>Before:</strong> {proposal.before}
+          </p>
+          <p>
+            <strong>After:</strong> {proposal.after}
+          </p>
+        </>
+      )}
 
       <h4>What changed</h4>
       <p>{diff.summary}</p>

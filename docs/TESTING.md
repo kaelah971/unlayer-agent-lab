@@ -363,3 +363,86 @@ Findings that changed code (both covered by new unit tests):
 Not covered by browser QA (still manual on a real machine): screen-
  reader pass, 360px responsive check, quota/interrupted-save paths,
  StrictMode remount leaks, WebMCP, multi-editor targeting.
+
+---
+
+# M5 — Real AI Studio
+
+Totals after M5: **111 automated tests** (71 engine/shared + 19 AI
+provider/proposal + 13 server + 8 inspector incl. AI rendering), all
+Node-mode Vitest, plus `tsc -b` (now also covering `app/server`) and
+`eslint` clean. No new runtime dependencies (backend is plain
+`node:http`; runs on Node >= 22.18 type stripping).
+
+## What is covered
+
+`app/src/ai/aiProvider.test.ts` — request building, 200/304/501/401/403/
+429/400 mapping, `Retry-After` passthrough, hanging-request timeout,
+unreachable backend, user cancel vs timeout, invalid-input throws (empty,
+oversized, bad mode, oversized design — with zero fetch calls), and a
+no-secrets test (same-origin relative URL, no `Authorization` header, no
+key-like fields, exact `{instruction, mode, baseDesign}` body shape).
+
+`app/src/ai/aiProposals.test.ts` — valid edit/create proposals, unusable
+candidates rejected, empty instructions rejected, no-change detection,
+incomplete-diff fail-closed, policy-blocked proposals, stale mid-
+generation designs, approval + rejection through the unchanged
+`approveEdit`, load-failure passthrough with native codes, blocked-
+before-load ordering (no backup, no `loadDesign`).
+
+`app/server/ai-server.test.ts` — request validation (modes, sizes,
+shapes), upstream body construction (edit includes `context.fullDesign`,
+create omits it), 200/304/401/403/429/5xx mapping, `parseEnvText`,
+`loadConfig` defaults/overrides, auth redaction, plus live loopback HTTP
+tests: status endpoint (presence-only, no key leakage), 400/501/404
+paths, and a full proxied generation with a stubbed upstream (asserts
+the `Bearer` wiring and that responses never contain the key).
+
+`ChangeInspector.test.tsx` — AI proposals render "AI instruction
+(Edit/Create...)" instead of manual Before/After; diff/policy sections
+unchanged.
+
+## Mocks vs real integration
+
+- Mocked: the Unlayer Cloud API (stubbed `fetchImpl` / `fetchFn`) and
+  the browser `fetch` to the local backend. The tests verify OUR mapping,
+  validation, fail-closed paths, and secret hygiene — not Unlayer's
+  models.
+- Real: `requestAiGeneration`, `prepareAiProposal`,
+  `finalizeAiGeneration`, `approveEdit` wiring, server routing/validation/
+  mapping (against a live loopback server), and every engine module they
+  compose.
+- No test performs a chargeable call: the proxy test with a configured
+  key uses a stubbed upstream; validation/short-circuit tests never
+  reach the network.
+
+## What still requires a browser or credentials
+
+- **Live AI verification: BLOCKED (no `UNLAYER_API_KEY` in this
+  environment).** The mock-mode browser QA below covers the UI states;
+  an authenticated end-to-end (real `output.data` -> diff -> approve)
+  still needs a keyed run. Do not claim it until a real 200 is observed.
+- Screen-reader/360px pass for the new AI controls; quota/rate-limit UX
+  against the real API; multi-turn conversation behavior (out of scope).
+- Long-generation UX (progress beyond a spinner) and timeout tuning
+  against real latencies.
+
+## M5 mock-mode browser QA (performed, no credentials)
+
+Method: dev server + local AI server (no key) + system Chrome headless
+driven over CDP with Node's built-in WebSocket (no Playwright).
+
+Verified in the live app shell:
+
+- Status endpoint reachable through the Vite proxy; UI shows the AI
+  section with mode radios, instruction box, and Generate button.
+- Without a key: backend returns 501 `ai_not_configured`; the app shows
+  the not-configured note and manual editing keeps working (prepare ->
+  approve -> canvas update unaffected).
+- Generate flow with a stubbed 200 upstream is covered by automated
+  tests; in the browser without a key the flow correctly stops at
+  configuration, never inventing a design.
+- No secrets in the client bundle: the provider test plus a bundle grep
+  for `UNLAYER_API_KEY` / `unlayer_sk_` (document the command:
+  `grep -ri "unlayer_sk_\|UNLAYER_API_KEY" app/dist/assets/*.js`
+  must print nothing).
