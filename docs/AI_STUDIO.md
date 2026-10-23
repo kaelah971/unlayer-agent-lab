@@ -157,3 +157,33 @@ before any backup or native call, exactly as in M4.
 - No conversation memory: each turn sends a single user message.
 - Live Unlayer generation was NOT exercised in automated tests or QA
   (no credentials in this environment) — see `docs/TESTING.md` M5.
+
+---
+
+## First live verification attempt (M7B, 2026-10-23)
+
+With a project-scoped `UNLAYER_API_KEY` configured in `app/.env`
+(gitignored, presence-only logging), exactly one authorized CREATE
+request was sent through the real stack (AI Studio → Vite proxy →
+local backend → `POST /v3/templates/generate`).
+
+**Result: upstream 403, no generation.** The backend logged
+`generate.start mode=create promptChars=259` then `generate.done
+upstreamStatus=403 mappedStatus=403` (~4 s). The key itself was
+accepted (no 401); Unlayer refused with a plan/permission message to
+the effect that the AI Assistant feature is not available on this
+project. The app mapped it to `ai_forbidden` → provider-error, showed
+the message, created no proposal, left the canvas byte-identical, and
+logged zero console errors.
+
+What this proves (even without a 200):
+
+- End-to-end wiring works against the real API: status detection,
+  proxied POST, `Bearer` auth, upstream mapping, and fail-closed UI
+  behavior on refusal.
+- The failure is access/entitlement, not an integration bug: no code
+  changes, no retries, and no second chargeable call were warranted.
+
+To unblock: enable the AI Assistant feature (or move to a plan that
+includes it) for the keyed project, then re-run this single CREATE
+test and continue through diff → policy → approval → `loadDesign`.

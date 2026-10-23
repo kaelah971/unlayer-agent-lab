@@ -625,3 +625,48 @@ recorded here and in `docs/M7A_PROGRESS.md`.
   a real-browser click-and-open is a manual spot-check.
 - Screen-reader pass, real-device 360 px, quota/429 UX, multi-turn
   conversation behavior.
+
+---
+
+# M7B — First Authenticated Live AI Generation Test (2026-10-23)
+
+One authorized CREATE request through the production stack (fresh
+headless-Chrome profile, real backend with project-scoped key,
+Vite proxy, standard 259-char welcome-email prompt). No mocks, no
+retries, no second chargeable call.
+
+## Outcome: upstream 403 — plan lacks the AI Assistant feature
+
+- Backend: `generate.start mode=create promptChars=259` →
+  `generate.done upstreamStatus=403 mappedStatus=403` in ~4 s.
+- Frontend: provider-error message surfaced (“You do not have
+  permission to … The AI Assistant feature is not available on this
+  project plan.”); **no proposal created** (no diff summary, no
+  policy list, no Approve button); canvas canonical JSON identical
+  before/after (2231 = 2231 B); AI section correctly showed
+  configured state (no “not configured” note, Generate enabled);
+  zero console errors.
+- Server logs carried statuses/sizes only — no key, prompt, or
+  design content.
+
+## Assessment
+
+- **Not an integration bug.** Key accepted (no 401), contract mapping
+  behaved exactly as unit-tested (`ai_forbidden` → provider-error,
+  fail closed, canvas untouched). No source changes required; suite
+  stays 144/144 with `tsc -b` + ESLint clean (re-verified after).
+- **Approval flow untested live** (correctly — there was nothing to
+  approve). Inspector/policy/approval for AI proposals remain covered
+  by unit tests + mock browser QA only.
+- **Credits:** the 403 refused before generation; nothing indicates
+  spend, but the balance was not queried (no extra calls per policy).
+- **Harness note:** the poll loop waited the full ~180 s because the
+  terminal 403 message matched none of the expected patterns; the
+  server log proves a single upstream call. Future live runs should
+  match on the provider-error message family too.
+
+## Still required
+
+A project with the AI Assistant feature enabled, then one CREATE run
+through diff → policy → human approval → `loadDesign` (native
+validation/audit, visible update, autosave, reload restore).

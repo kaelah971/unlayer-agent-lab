@@ -55,9 +55,17 @@ waived explicitly or resolved.
 
 ## BLOCKED / manual gates (do not claim as verified)
 
-- **Live Unlayer Cloud AI generation: BLOCKED** — no `UNLAYER_API_KEY`
-  in this environment. Requires a keyed run: real 200 with
-  `output.data` → diff → policy → human approval → `loadDesign`.
+- **Live Unlayer Cloud AI generation: BLOCKED (attempted 2026-10-23,
+  upstream refused).** Key detected and accepted (no 401); exactly one
+  authorized CREATE request returned upstream **403** in ~4 s, mapped
+  1:1 to `ai_forbidden` and surfaced as “You do not have permission
+  to … The AI Assistant feature is not available on this project
+  plan.” No proposal was created, the canvas was untouched, zero
+  console errors. The project needs the AI Assistant feature enabled
+  (or a plan that includes it) before a real 200 with `output.data`
+  → diff → policy → human approval → `loadDesign` can be verified.
+  See `docs/TESTING.md` M7B and `docs/AI_STUDIO.md` (live note). No
+  second chargeable call was made.
 - Headless file download to disk: not capturable in this environment
   (Chrome reports export success but writes no file; zero
   `downloadWillBegin` events even for a synthetic blob). The exact
