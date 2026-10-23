@@ -14,6 +14,11 @@ Two connected workspaces for human-approved email design with the
   never touch the canvas; live results come only from real `loadDesign`
   calls.
 
+AI providers (selectable in AI Studio): **Unlayer Cloud AI**
+(full-design generation) and **Groq BYOM** (free-tier friendly;
+constrained paragraph-edit operations only — it rewrites existing
+paragraph text, it does not generate complete emails).
+
 ## Quick start
 
 Prerequisites: Node ≥ 22.18, npm, Google Chrome (for browser QA only),
@@ -25,13 +30,19 @@ npm install
 npm run dev        # http://127.0.0.1:5173/
 ```
 
-Optional AI backend (real generation needs a paid Unlayer key):
+Optional AI backends (pick either or both; both loopback-only):
 
 ```bash
-cp app/.env.example app/.env   # then set UNLAYER_API_KEY
+cp app/.env.example app/.env   # then set UNLAYER_API_KEY and/or GROQ_API_KEY
 npm --prefix app run server    # 127.0.0.1:5198 (loopback only)
 npm --prefix app run dev       # Vite proxies /api -> the AI server
 ```
+
+- Unlayer Cloud AI needs a paid key **with AI Assistant entitlement**
+  (without it, requests fail with a plan-permission error).
+- Groq BYOM needs a free-tier `GROQ_API_KEY`
+  (https://console.groq.com); optional `GROQ_MODEL` override.
+  See `docs/BYOM_GROQ.md`.
 
 Checks:
 
@@ -46,7 +57,9 @@ npm --prefix app run lint
 | Credential | Required? | Where it lives |
 |---|---|---|
 | None | No — manual editing, policies, Lab, autosave all work keyless | — |
-| `UNLAYER_API_KEY` (`unlayer_sk_*` server key) | Only for real AI generation; consumed as AI credits | `app/.env` (gitignored) → server process env → `Authorization: Bearer` to api.unlayer.com |
+| `UNLAYER_API_KEY` (`unlayer_sk_*` server key) | Only for Unlayer Cloud AI; consumed as AI credits, and the plan needs AI Assistant entitlement | `app/.env` (gitignored) → server process env → `Authorization: Bearer` to api.unlayer.com |
+| `GROQ_API_KEY` (`gsk_*`) | Only for Groq BYOM paragraph editing; free tier works | `app/.env` (gitignored) → server process env → `Authorization: Bearer` to api.groq.com |
+| `GROQ_MODEL` | Optional model override (default `openai/gpt-oss-20b`; must support strict structured outputs) | `app/.env` → server only; the browser only learns the model name via status |
 | `UNLAYER_PROJECT_ID` | Only for Personal Access Tokens (`unlayer_pat_*`) | Same as above |
 
 Without a key the UI says “AI is not configured” and disables
@@ -66,15 +79,22 @@ inventory); 5/5 simulated scenarios with canonical canvas isolation;
 evidence export bytes (parsed, schema-checked, no secrets, opt-in
 snapshot sanitized); XSS payload stored escaped with no live DOM tag;
 360 px viewport with no horizontal overflow; logical Tab order with
-visible focus; zero console errors. Automated suite: 144 Vitest tests,
-plus `tsc -b` and ESLint clean.
+visible focus; zero console errors.
 
-**NOT verified — do not claim it:** live Unlayer Cloud AI generation
-end-to-end (no `UNLAYER_API_KEY` in any test environment; the gate is
-BLOCKED until a keyed run observes a real 200 with `output.data`
-flowing through diff → policy → approval). Screen-reader pass,
-real-device 360 px hardware check, quota/rate-limit UX against the real
-API, and multi-turn conversation behavior are also still manual.
+**Verified live (M7B/M8, one call each, no mocks):** Groq BYOM with
+`openai/gpt-oss-20b` proposed “2 changes across 2 blocks” (4/4
+policies pass), approved, applied to the canvas, autosaved, and
+restored after reload. Unlayer Cloud AI with a valid key returned 403
+`ai_forbidden` — the key works but the project plan lacks AI Assistant
+entitlement, so full-design generation remains unverified by design,
+not by integration failure. Automated suite: 178 Vitest tests, plus
+`tsc -b` and ESLint clean.
+
+**NOT verified — do not claim it:** Unlayer Cloud AI end-to-end (needs
+an entitled key for a real 200 with `output.data`); non-default
+`GROQ_MODEL` values live; real free-tier 429 handling; screen-reader
+pass; real-device 360 px hardware check; multi-turn conversation
+behavior.
 
 ## Integration and deployment limitations
 
@@ -88,6 +108,9 @@ API, and multi-turn conversation behavior are also still manual.
   same loopback-and-auth discipline.
 - First-paragraph-only manual transform (documented workflow limit);
   blank templates need a seeded paragraph before manual prepare.
+- Groq v1 edits **existing paragraphs only** (≤10 ops/turn); it does
+  not generate complete emails, touch other block types, or remember
+  conversation context. See `docs/BYOM_GROQ.md`.
 - Stale detection is `JSON.stringify` equality (key-order sensitive).
 - Evidence log is in-memory (cap 100), cleared on reload.
 - See `docs/RELEASE_CHECKLIST.md` (gates), `docs/DEMO_PLAN.md`

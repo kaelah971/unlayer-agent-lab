@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+dist-ssr/
+*.local
+
+# Environment (keys must never be committed)
+.env
+.env.*
+!.env.example
+
+# One-off QA harnesses and throwaway browser profiles
+*-qa*.cjs
+*-live*.cjs
+*-dbg.cjs
+.tmp-*/
+tmp/
+
+# Logs and OS/editor artifacts
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
