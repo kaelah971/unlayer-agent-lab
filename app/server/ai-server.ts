@@ -27,6 +27,13 @@ export const AI_SERVER_DEFAULT_MAX_PROMPT_CHARS = 4000;
 export const AI_SERVER_DEFAULT_MAX_DESIGN_BYTES = 4 * 1024 * 1024;
 export const AI_SERVER_DEFAULT_MAX_BODY_BYTES = 6_500_000;
 export const AI_UPSTREAM_URL = 'https://api.unlayer.com/v3/templates/generate';
+export const GROQ_UPSTREAM_URL = 'https://api.groq.com/openai/v1/chat/completions';
+export const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-20b';
+export const GROQ_MAX_OPS = 10;
+export const GROQ_MAX_TEXT_CHARS = 2000;
+export const GROQ_MAX_INVENTORY_BLOCKS = 20;
+export const GROQ_MAX_INVENTORY_TEXT_CHARS = 300;
+export const GROQ_MAX_COMPLETION_TOKENS = 2000;
 
 export interface ServerConfig {
   apiKey: string;
@@ -37,6 +44,11 @@ export interface ServerConfig {
   maxPromptChars: number;
   maxDesignBytes: number;
   maxBodyBytes: number;
+  /** Groq BYOM provider (M8). Empty key = unconfigured; never leaves this process. */
+  groqApiKey: string;
+  /** Overridable via GROQ_MODEL; must support structured outputs. */
+  groqModel: string;
+  groqUpstreamUrl: string;
   /** Upstream HTTP client. Injectable so tests never touch the network. */
   fetchImpl?: typeof fetch;
 }
@@ -86,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
   const get = (key: string): string | undefined => env[key] ?? fileVars[key];
   const apiKey = (get('UNLAYER_API_KEY') ?? '').trim();
   const projectId = (get('UNLAYER_PROJECT_ID') ?? '').trim() || undefined;
+  const groqModel = (get('GROQ_MODEL') ?? '').trim() || GROQ_DEFAULT_MODEL;
   return {
     apiKey,
     projectId,
@@ -95,6 +108,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     maxPromptChars: intOr(get('AI_MAX_PROMPT_CHARS'), AI_SERVER_DEFAULT_MAX_PROMPT_CHARS),
     maxDesignBytes: intOr(get('AI_MAX_DESIGN_BYTES'), AI_SERVER_DEFAULT_MAX_DESIGN_BYTES),
     maxBodyBytes: AI_SERVER_DEFAULT_MAX_BODY_BYTES,
+    groqApiKey: (get('GROQ_API_KEY') ?? '').trim(),
+    groqModel,
+    groqUpstreamUrl: GROQ_UPSTREAM_URL,
   };
 }
 
@@ -247,6 +263,264 @@ export function redactAuthHeader(value: string | undefined): string {
   return token ? `present(len${token.length})` : 'missing';
 }
 
+/* ------------------------------------------------------------------ */
+/* Groq BYOM provider (M8).                                            */
+/*                                                                     */
+/* Same trust model as the Unlayer path: the key lives only in this   */
+/* process, validation is shared, and the model returns constrained   */
+/* paragraph EDIT OPERATIONS (never full-design JSON). The inventory   */
+/* walk below mirrors `buildParagraphInventory` in `src/ai/groqOps.ts` */
+/* (kept separate so the backend never imports frontend engine code). */
+/* The engine re-validates every operation before anything reaches    */
+/* the canvas — this layer only keeps garbage from crossing the wire. */
+/* ------------------------------------------------------------------ */
+
+export interface GroqInventoryEntry {
+  id: string;
+  text: string;
+}
+
+function groqLexicalFirstText(textJson: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(textJson);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const root = (parsed as Record<string, unknown>)['root'];
+    if (root === null || typeof root !== 'object' || Array.isArray(root)) return null;
+    const children = (root as Record<string, unknown>)['children'];
+    if (!Array.isArray(children)) return null;
+    const first = children[0];
+    if (first === null || typeof first !== 'object' || Array.isArray(first)) return null;
+    const inner = (first as Record<string, unknown>)['children'];
+    if (!Array.isArray(inner)) return null;
+    const node = inner[0];
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
+    const text = (node as Record<string, unknown>)['text'];
+    return typeof text === 'string' ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Editable-paragraph inventory for the model prompt. Never throws. */
+export function buildGroqInventory(
+  design: unknown,
+  limits: { maxBlocks?: number; maxTextChars?: number } = {},
+): GroqInventoryEntry[] {
+  const maxBlocks = limits.maxBlocks ?? GROQ_MAX_INVENTORY_BLOCKS;
+  const maxTextChars = limits.maxTextChars ?? GROQ_MAX_INVENTORY_TEXT_CHARS;
+  const entries: GroqInventoryEntry[] = [];
+  try {
+    if (design === null || typeof design !== 'object' || Array.isArray(design)) return [];
+    const body = (design as Record<string, unknown>)['body'];
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return [];
+    const sections: Array<{ rows: unknown; prefix: string }> = [{ rows: (body as Record<string, unknown>)['rows'], prefix: 'rows' }];
+    const record = body as Record<string, unknown>;
+    if (record['headers'] !== undefined) sections.push({ rows: record['headers'], prefix: 'headers' });
+    if (record['footers'] !== undefined) sections.push({ rows: record['footers'], prefix: 'footers' });
+    for (const section of sections) {
+      if (!Array.isArray(section.rows)) continue;
+      for (const row of section.rows) {
+        if (row === null || typeof row !== 'object' || Array.isArray(row)) continue;
+        const columns = (row as Record<string, unknown>)['columns'];
+        if (!Array.isArray(columns)) continue;
+        for (const column of columns) {
+          if (column === null || typeof column !== 'object' || Array.isArray(column)) continue;
+          const contents = (column as Record<string, unknown>)['contents'];
+          if (!Array.isArray(contents)) continue;
+          for (const block of contents) {
+            if (entries.length >= maxBlocks) return entries;
+            if (block === null || typeof block !== 'object' || Array.isArray(block)) continue;
+            const candidate = block as Record<string, unknown>;
+            if (typeof candidate['id'] !== 'string' || !candidate['id']) continue;
+            if (candidate['type'] !== 'paragraph') continue;
+            const values = candidate['values'];
+            if (values === null || typeof values !== 'object' || Array.isArray(values)) continue;
+            const fields = values as Record<string, unknown>;
+            if (fields['locked'] || typeof fields['text'] !== 'string' || typeof fields['textJson'] !== 'string') continue;
+            const current = groqLexicalFirstText(fields['textJson']);
+            if (current === null) continue;
+            entries.push({
+              id: candidate['id'],
+              text: current.length > maxTextChars ? current.slice(0, maxTextChars) + '…' : current,
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    return [];
+  }
+  return entries;
+}
+
+export const GROQ_OP_JSON_SCHEMA = {
+  name: 'paragraph_edits',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      operations: {
+        type: 'array',
+        maxItems: GROQ_MAX_OPS,
+        items: {
+          type: 'object',
+          properties: {
+            op: { const: 'set_paragraph_text' },
+            blockId: { type: 'string' },
+            text: { type: 'string', maxLength: GROQ_MAX_TEXT_CHARS },
+          },
+          required: ['op', 'blockId', 'text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['operations'],
+    additionalProperties: false,
+  },
+};
+
+export interface GroqUpstreamInput {
+  instruction: string;
+  inventory: GroqInventoryEntry[];
+  model: string;
+}
+
+/** Chat-completions request with strict structured outputs. No secrets inside. */
+export function buildGroqUpstreamRequest(input: GroqUpstreamInput): Record<string, unknown> {
+  const system = [
+    'You edit email copy via constrained operations. Rules:',
+    '- Reply with ONLY set_paragraph_text operations for block IDs listed below.',
+    '- Never invent block IDs, HTML, markdown, or structural changes.',
+    '- text is plain text (no tags); keep each under 2000 characters.',
+    '- Return {"operations": []} when no listed block matches the request.',
+    `Editable paragraphs: ${JSON.stringify(input.inventory)}`,
+  ].join('\n');
+  return {
+    model: input.model,
+    temperature: 0,
+    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+    response_format: { type: 'json_schema', json_schema: GROQ_OP_JSON_SCHEMA },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: input.instruction },
+    ],
+  };
+}
+
+export interface GroqValidatedOp {
+  op: 'set_paragraph_text';
+  blockId: string;
+  text: string;
+}
+
+export type GroqMappedResponse =
+  | { status: 200; body: { operations: GroqValidatedOp[]; dropped: string[]; model?: string } }
+  | { status: number; body: { error: string; message: string; retryAfterMs?: number; retryable: boolean } };
+
+function groqFailure(status: number, error: string, message: string, retryable: boolean): GroqMappedResponse {
+  return { status, body: { error, message, retryable } };
+}
+
+/**
+ * Map a Groq chat-completions response to validated operations.
+ * Coarse gate only: unknown block IDs are dropped here, and the engine
+ * re-validates everything before building a proposal.
+ */
+export function mapGroqUpstreamResponse(
+  call: UpstreamCall,
+  knownIds: string[],
+  limits: { maxOps?: number; maxTextChars?: number } = {},
+): GroqMappedResponse {
+  const maxOps = limits.maxOps ?? GROQ_MAX_OPS;
+  const maxTextChars = limits.maxTextChars ?? GROQ_MAX_TEXT_CHARS;
+  const known = new Set(knownIds);
+  if (call.status === 401) {
+    return groqFailure(401, 'groq_unauthorized', 'Groq rejected the API key.', false);
+  }
+  if (call.status === 403) {
+    return groqFailure(403, 'groq_forbidden', 'Groq refused the request (plan, credits, or permissions).', false);
+  }
+  if (call.status === 429) {
+    const retryAfterMs = parseRetryAfter(call.headers);
+    return {
+      status: 429,
+      body: {
+        error: 'rate_limited',
+        message: 'Groq rate limit reached. Try again shortly.',
+        retryable: true,
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      },
+    };
+  }
+  if (call.status === 400) {
+    return groqFailure(400, 'invalid_request', upstreamMessage(safeJsonParse(call.bodyText), 'Groq rejected the request as invalid.'), false);
+  }
+  if (call.status === 408 || call.status === 504) {
+    return groqFailure(502, 'upstream_timeout', 'Groq request timed out. Try again.', true);
+  }
+  if (call.status === 502 || call.status === 503) {
+    return groqFailure(502, 'upstream_unavailable', 'Groq is temporarily unavailable. Try again.', true);
+  }
+  if (call.status !== 200) {
+    const fallback = typeof call.status === 'number' ? `Groq error (HTTP ${call.status}).` : 'Groq error.';
+    return groqFailure(502, 'upstream_error', upstreamMessage(safeJsonParse(call.bodyText), fallback), true);
+  }
+  const parsed = safeJsonParse(call.bodyText);
+  const choices = isObject(parsed) && Array.isArray(parsed['choices']) ? (parsed['choices'] as unknown[]) : null;
+  const message = choices && choices.length > 0 && isObject(choices[0])
+    ? ((choices[0] as Record<string, unknown>)['message'] as unknown)
+    : null;
+  const content = isObject(message) ? message['content'] : null;
+  let operations: unknown = null;
+  try {
+    const decoded = typeof content === 'string' ? (JSON.parse(content) as unknown) : content;
+    if (isObject(decoded) && Array.isArray(decoded['operations'])) {
+      operations = decoded['operations'] as unknown[];
+    }
+  } catch {
+    operations = null;
+  }
+  if (!Array.isArray(operations)) {
+    return groqFailure(502, 'invalid_response', 'Groq returned an unusable response. Nothing was changed.', false);
+  }
+  const valid: GroqValidatedOp[] = [];
+  const dropped: string[] = [];
+  for (const entry of (operations as unknown[]).slice(0, maxOps)) {
+    if (!isObject(entry) || entry['op'] !== 'set_paragraph_text') {
+      dropped.push('Dropped an unsupported operation.');
+      continue;
+    }
+    if (typeof entry['blockId'] !== 'string' || !known.has(entry['blockId'])) {
+      dropped.push('Dropped an operation for an unknown block.');
+      continue;
+    }
+    if (typeof entry['text'] !== 'string' || !entry['text'].trim()) {
+      dropped.push('Dropped an operation with empty text.');
+      continue;
+    }
+    if (entry['text'].length > maxTextChars) {
+      dropped.push('Dropped an operation with oversized text.');
+      continue;
+    }
+    valid.push({ op: 'set_paragraph_text', blockId: entry['blockId'], text: entry['text'] });
+  }
+  if ((operations as unknown[]).length > maxOps) {
+    dropped.push(`Ignored ${(operations as unknown[]).length - maxOps} operation(s) beyond the ${maxOps}-operation cap.`);
+  }
+  if (valid.length === 0 && (operations as unknown[]).length > 0) {
+    return groqFailure(502, 'invalid_response', dropped[0] ?? 'Groq returned no usable editing operations.', false);
+  }
+  const modelName = isObject(parsed) && typeof parsed['model'] === 'string' ? (parsed['model'] as string) : undefined;
+  return {
+    status: 200,
+    body: {
+      operations: valid,
+      dropped,
+      ...(modelName ? { model: modelName } : {}),
+    },
+  };
+}
+
 function log(event: string, details: Record<string, unknown>): void {
   console.log(JSON.stringify({ t: new Date().toISOString(), event, ...details }));
 }
@@ -276,6 +550,88 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true; t
     });
     req.on('error', () => resolve({ ok: false }));
   });
+}
+
+async function handleGroqGenerate(req: IncomingMessage, res: ServerResponse, config: ServerConfig): Promise<void> {
+  const contentType = req.headers['content-type'] ?? '';
+  if (!contentType.includes('application/json')) {
+    sendJson(res, 400, { error: 'invalid_request', message: 'Content-Type must be application/json.' });
+    return;
+  }
+  const raw = await readBody(req, config.maxBodyBytes);
+  if (!raw.ok) {
+    log('groq.generate.rejected', { reason: 'body_too_large' });
+    sendJson(res, 413, { error: 'payload_too_large', message: 'Request body is too large.' });
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.text) as unknown;
+  } catch {
+    sendJson(res, 400, { error: 'invalid_request', message: 'Request body must be JSON.' });
+    return;
+  }
+  const validated = validateGenerateInput(parsed, config);
+  if (!validated.ok) {
+    log('groq.generate.rejected', { reason: validated.failure.error });
+    sendJson(res, validated.failure.status, { error: validated.failure.error, message: validated.failure.message });
+    return;
+  }
+  if (validated.value.mode !== 'edit') {
+    log('groq.generate.rejected', { reason: 'mode_not_supported' });
+    sendJson(res, 400, { error: 'invalid_request', message: 'Groq provider currently supports editing existing designs only.' });
+    return;
+  }
+  if (!config.groqApiKey) {
+    sendJson(res, 501, { error: 'groq_not_configured', message: 'GROQ_API_KEY is not set. See docs/BYOM_GROQ.md.' });
+    return;
+  }
+  const inventory = buildGroqInventory(validated.value.baseDesign);
+  if (inventory.length === 0) {
+    sendJson(res, 400, { error: 'invalid_request', message: 'No editable paragraph blocks found in the current design.' });
+    return;
+  }
+  const started = Date.now();
+  log('groq.generate.start', { model: config.groqModel, promptChars: validated.value.instruction.length, blocks: inventory.length });
+  const fetchImpl = config.fetchImpl ?? fetch;
+  let upstreamStatus = 0;
+  try {
+    const upstreamRes = await fetchImpl(config.groqUpstreamUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.groqApiKey}`,
+      },
+      body: JSON.stringify(buildGroqUpstreamRequest({
+        instruction: validated.value.instruction,
+        inventory,
+        model: config.groqModel,
+      })),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    upstreamStatus = upstreamRes.status;
+    const headers: Record<string, string> = {};
+    upstreamRes.headers.forEach((value, name) => {
+      headers[name] = value;
+    });
+    const bodyText = await upstreamRes.text();
+    const mapped = mapGroqUpstreamResponse(
+      { status: upstreamRes.status, headers, bodyText },
+      inventory.map((entry) => entry.id),
+    );
+    log('groq.generate.done', { upstreamStatus, mappedStatus: mapped.status, ms: Date.now() - started });
+    sendJson(res, mapped.status, { ...mapped.body });
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
+    log('groq.generate.failed', { reason: timedOut ? 'timeout' : 'network', upstreamStatus });
+    sendJson(
+      res,
+      502,
+      timedOut
+        ? { error: 'upstream_timeout', message: 'Groq request timed out. Try again.', retryable: true }
+        : { error: 'upstream_unreachable', message: 'Could not reach Groq. Try again.', retryable: true },
+    );
+  }
 }
 
 async function handleGenerate(req: IncomingMessage, res: ServerResponse, config: ServerConfig): Promise<void> {
@@ -360,6 +716,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
     await handleGenerate(req, res, config);
     return;
   }
+  if (req.method === 'GET' && url.pathname === '/api/ai/groq-status') {
+    log('groq.status', { configured: config.groqApiKey !== '' });
+    sendJson(res, 200, { configured: config.groqApiKey !== '', model: config.groqModel });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/ai/groq-generate') {
+    await handleGroqGenerate(req, res, config);
+    return;
+  }
   sendJson(res, 404, { error: 'not_found', message: 'Unknown endpoint.' });
 }
 
@@ -371,7 +736,7 @@ export function startServer(overrides?: Partial<ServerConfig>): Server {
     });
   });
   server.listen(config.port, '127.0.0.1', () => {
-    log('listening', { port: config.port, configured: config.apiKey !== '', auth: redactAuthHeader(config.apiKey ? `Bearer ${config.apiKey}` : undefined) });
+    log('listening', { port: config.port, configured: config.apiKey !== '', groqConfigured: config.groqApiKey !== '', auth: redactAuthHeader(config.apiKey ? `Bearer ${config.apiKey}` : undefined) });
   });
   return server;
 }

@@ -187,3 +187,21 @@ What this proves (even without a 200):
 To unblock: enable the AI Assistant feature (or move to a plan that
 includes it) for the keyed project, then re-run this single CREATE
 test and continue through diff → policy → approval → `loadDesign`.
+
+---
+
+## Provider selection (M8)
+
+AI Studio now offers two providers behind an **AI provider** radio:
+
+- **Unlayer Cloud** — full-design generation (edit + create modes),
+  unchanged from M5/M7B.
+- **Groq (BYOM)** — edit-only constrained paragraph operations via a
+  third-party LLM. Shows the active model (default
+  `openai/gpt-oss-20b`) and disables itself with a setup pointer when
+  `GROQ_API_KEY` is absent.
+
+Both providers share the proposal pipeline (inspector, policies,
+stale check, approval, native validation, autosave). See
+`docs/BYOM_GROQ.md` for the Groq architecture, model selection,
+setup, and limits.

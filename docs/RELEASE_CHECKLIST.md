@@ -53,6 +53,16 @@ waived explicitly or resolved.
 | `docs/TESTING.md` (M7A record, no fabricated results) | PASS |
 | `docs/M7A_PROGRESS.md` (recovery log) | PASS |
 
+## Provider gates (M8 — BYOM Groq)
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Groq provider selectable, Unlayer intact | PASS | Provider radio (Unlayer Cloud / Groq BYOM); Unlayer flow unchanged; Groq shows model `openai/gpt-oss-20b` + edit-only note |
+| Groq live generation (1 free-tier call) | PASS | 200→200 in ~1.9 s; “2 changes across 2 blocks”, 4/4 policies pass, Approve enabled |
+| Groq proposal → approval → persistence | PASS | Canvas untouched until approval (4775 B); applied + native panel; canvas 4885 B; autosave + reload restore; zero console errors |
+| Groq secrets server-side | PASS | Same-origin POST, no `Authorization` header (unit-tested); bundle has no `GROQ_API_KEY`/`gsk-`; status leaks only `{configured, model}` |
+| Groq failure handling | PASS | 501/400 paths + 401/403/429/5xx/timeout mapping unit-tested; invalid output fails closed |
+
 ## BLOCKED / manual gates (do not claim as verified)
 
 - **Live Unlayer Cloud AI generation: BLOCKED (attempted 2026-10-23,

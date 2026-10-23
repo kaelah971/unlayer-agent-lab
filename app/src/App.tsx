@@ -3,8 +3,9 @@ import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-
 import { describeAgent, getAgentDesign, loadAgentDesign } from './engine/unlayerAgent'
 import { approveEdit, prepareParagraphEdit, type PreparedParagraphEdit } from './engine/proposals'
 import { createPolicyGate, DEFAULT_POLICY_CONFIG } from './engine/policies'
-import { checkAiStatus, requestAiGeneration, type AiMode } from './ai/aiProvider'
+import { checkAiStatus, checkGroqStatus, requestAiGeneration, requestGroqGeneration, type AiMode, type GroqStatus } from './ai/aiProvider'
 import { finalizeAiGeneration } from './ai/aiProposals'
+import { finalizeGroqGeneration } from './ai/groqOps'
 import type { AgentLoadDesignResult } from './engine/types'
 import { ChangeInspector, NativeResultPanel } from './shared/ChangeInspector'
 import { InspectorErrorBoundary } from './shared/ErrorBoundary'
@@ -39,6 +40,8 @@ function App() {
   const [aiStatus, setAiStatus] = useState<string | null>(null)
   const [aiRunning, setAiRunning] = useState(false)
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null)
+  const [aiProvider, setAiProvider] = useState<'unlayer' | 'groq'>('unlayer')
+  const [groqStatus, setGroqStatus] = useState<GroqStatus | null>(null)
   const aiAbort = useRef<AbortController | null>(null)
   const [workspace, setWorkspace] = useState<Workspace>('studio')
   const [evidence, setEvidence] = useState<EvidenceEntry[]>([])
@@ -46,8 +49,11 @@ function App() {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const configured = await checkAiStatus()
-      if (!cancelled) setAiAvailable(configured)
+      const [unlayerConfigured, groq] = await Promise.all([checkAiStatus(), checkGroqStatus()])
+      if (!cancelled) {
+        setAiAvailable(unlayerConfigured)
+        setGroqStatus(groq)
+      }
     })()
     return () => {
       cancelled = true
@@ -262,9 +268,39 @@ function App() {
     const controller = new AbortController()
     aiAbort.current = controller
     setAiRunning(true)
-    setAiStatus(aiMode === 'create' ? 'Generating a new design with AI...' : 'Asking AI to edit the design...')
+    const providerLabel = aiProvider === 'groq' ? 'Groq' : 'AI'
+    setAiStatus(aiProvider === 'groq' ? 'Asking Groq to edit the design...' : aiMode === 'create' ? 'Generating a new design with AI...' : 'Asking AI to edit the design...')
 
     try {
+      if (aiProvider === 'groq') {
+        const result = await requestGroqGeneration(
+          { instruction: aiInstruction, baseDesign: base },
+          { signal: controller.signal },
+        )
+        const live = await getAgentDesign()
+        const outcome = finalizeGroqGeneration({
+          result,
+          baseSnapshot,
+          liveDesign: live,
+          instruction: aiInstruction,
+        })
+        switch (outcome.status) {
+          case 'ready':
+            setProposal(outcome.proposal)
+            setAiStatus('Groq proposal ready. The canvas has not been changed.')
+            break
+          case 'stale':
+            setAiStatus('The design changed while Groq was generating. Review the canvas and try again.')
+            break
+          case 'no-change':
+            setAiStatus('Groq reported no changes for that instruction.')
+            break
+          case 'provider-error':
+            setAiStatus(outcome.message)
+            break
+        }
+        return
+      }
       const result = await requestAiGeneration(
         { instruction: aiInstruction, mode: aiMode, baseDesign: base },
         { signal: controller.signal },
@@ -280,7 +316,7 @@ function App() {
       switch (outcome.status) {
         case 'ready':
           setProposal(outcome.proposal)
-          setAiStatus('AI proposal ready. The canvas has not been changed.')
+          setAiStatus(`${providerLabel} proposal ready. The canvas has not been changed.`)
           break
         case 'stale':
           setAiStatus('The design changed while AI was generating. Review the canvas and try again.')
@@ -361,9 +397,23 @@ function App() {
         {lastApplied && <NativeResultPanel title="Last applied change" result={lastApplied} />}
         <div>
           <h3>Generate with AI</h3>
-          {aiAvailable === false && (
+          <div role='radiogroup' aria-label='AI provider'>
+            <label>
+              <input type='radio' name='ai-provider' checked={aiProvider === 'unlayer'} onChange={() => setAiProvider('unlayer')} />
+              {' '}Unlayer Cloud{aiAvailable === false ? ' (not configured)' : ''}
+            </label>
+            <label>
+              <input type='radio' name='ai-provider' checked={aiProvider === 'groq'} onChange={() => setAiProvider('groq')} />
+              {' '}Groq (BYOM){groqStatus && !groqStatus.configured ? ' (not configured)' : ''}{aiProvider === 'groq' && groqStatus?.configured && groqStatus.model ? ` — ${groqStatus.model}` : ''}
+            </label>
+          </div>
+          {aiProvider === 'unlayer' && aiAvailable === false && (
             <p>AI is not configured. Start the local AI server with an Unlayer API key — see docs/AI_STUDIO.md. Manual editing still works.</p>
           )}
+          {aiProvider === 'groq' && groqStatus?.configured === false && (
+            <p>Groq is not configured. Start the local AI server with a GROQ_API_KEY — see docs/BYOM_GROQ.md. Manual editing still works.</p>
+          )}
+          {aiProvider === 'unlayer' && (
           <div role='radiogroup' aria-label='AI mode'>
             <label>
               <input type='radio' name='ai-mode' checked={aiMode === 'edit'} onChange={() => setAiMode('edit')} />
@@ -374,11 +424,15 @@ function App() {
               {' '}Create new design
             </label>
           </div>
+          )}
+          {aiProvider === 'groq' && (
+            <p>Groq edits existing paragraphs only, using constrained operations reviewed below. No full-design generation.</p>
+          )}
           <label htmlFor='ai-instruction'>AI instruction</label>
           <textarea id='ai-instruction' rows={3} value={aiInstruction} onChange={(event) => setAiInstruction(event.target.value)} placeholder='Describe the email design... e.g. "A spring sale announcement with a 20% off button"' />
           <div>
-            <button type='button' onClick={() => void generateAi()} disabled={aiRunning || aiAvailable === false}>
-              {aiRunning ? 'Generating...' : 'Generate with AI'}
+            <button type='button' onClick={() => void generateAi()} disabled={aiRunning || (aiProvider === 'groq' ? groqStatus?.configured === false : aiAvailable === false)}>
+              {aiRunning ? 'Generating...' : aiProvider === 'groq' ? 'Edit with Groq' : 'Generate with AI'}
             </button>
             {aiRunning && (
               <button type='button' onClick={cancelAi}>

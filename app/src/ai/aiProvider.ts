@@ -26,6 +26,8 @@ export type AiGenerateResult =
 
 export const AI_ENDPOINT = '/api/ai/generate';
 export const AI_STATUS_ENDPOINT = '/api/ai/status';
+export const GROQ_ENDPOINT = '/api/ai/groq-generate';
+export const GROQ_STATUS_ENDPOINT = '/api/ai/groq-status';
 export const AI_TIMEOUT_MS = 120_000;
 export const MAX_PROMPT_CHARS = 4000;
 export const MAX_DESIGN_JSON_BYTES = 4 * 1024 * 1024;
@@ -75,10 +77,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function errorCodeForStatus(status: number, body: unknown): string {
   if (isObject(body) && typeof body['error'] === 'string') {
     const code = body['error'];
-    if (code === 'ai_not_configured') return 'not-configured';
+    if (code === 'ai_not_configured' || code === 'groq_not_configured') return 'not-configured';
     // Normalize server auth codes to client-facing names.
-    if (code === 'ai_unauthorized') return 'unauthorized';
-    if (code === 'ai_forbidden') return 'forbidden';
+    if (code === 'ai_unauthorized' || code === 'groq_unauthorized') return 'unauthorized';
+    if (code === 'ai_forbidden' || code === 'groq_forbidden') return 'forbidden';
     if (['rate_limited', 'invalid_request', 'payload_too_large', 'upstream_timeout', 'upstream_unavailable', 'upstream_error', 'invalid_response'].includes(code)) {
       return code;
     }
@@ -189,4 +191,128 @@ export async function checkAiStatus(
   } catch {
     return false;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Groq BYOM provider (M8, edit-only). Same-origin calls to the local  */
+/* backend; the browser never sees credentials. The backend returns   */
+/* validated paragraph operations — never full-design JSON.          */
+/* ------------------------------------------------------------------ */
+
+export interface GroqOperation {
+  op: 'set_paragraph_text';
+  blockId: string;
+  text: string;
+}
+
+export type GroqGenerateResult =
+  | { status: 'ready'; operations: unknown; dropped?: string[]; model?: string }
+  | { status: 'no-change' }
+  | { status: 'not-configured' }
+  | { status: 'error'; code: string; message: string; retryable: boolean };
+
+export interface GroqStatus {
+  configured: boolean;
+  model: string | null;
+}
+
+export async function checkGroqStatus(fetchFn: typeof fetch = fetch): Promise<GroqStatus> {
+  try {
+    const response = await fetchFn(GROQ_STATUS_ENDPOINT);
+    if (!response.ok) return { configured: false, model: null };
+    const body = (await response.json()) as unknown;
+    if (typeof body !== 'object' || body === null) return { configured: false, model: null };
+    const record = body as { configured?: unknown; model?: unknown };
+    return {
+      configured: record.configured === true,
+      model: typeof record.model === 'string' ? record.model : null,
+    };
+  } catch {
+    return { configured: false, model: null };
+  }
+}
+
+export async function requestGroqGeneration(
+  input: { instruction: string; baseDesign: unknown },
+  options?: {
+    fetchFn?: typeof fetch;
+    endpoint?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  },
+): Promise<GroqGenerateResult> {
+  const { instruction, designJson } = validateAiInput({ instruction: input.instruction, mode: 'edit', baseDesign: input.baseDesign });
+  const fetchFn = options?.fetchFn ?? fetch;
+  const endpoint = options?.endpoint ?? GROQ_ENDPOINT;
+  const timeoutMs = options?.timeoutMs ?? AI_TIMEOUT_MS;
+
+  if (options?.signal?.aborted) {
+    return { status: 'error', code: 'cancelled', message: 'Groq request cancelled.', retryable: false };
+  }
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
+  const onExternalAbort = (): void => timeout.abort();
+  options?.signal?.addEventListener('abort', onExternalAbort);
+  let response: Response;
+  try {
+    response = await fetchFn(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction, mode: 'edit', baseDesign: JSON.parse(designJson) as unknown }),
+      signal: timeout.signal,
+    });
+  } catch (error) {
+    if (options?.signal?.aborted) {
+      return { status: 'error', code: 'cancelled', message: 'Groq request cancelled.', retryable: false };
+    }
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return { status: 'error', code: 'timeout', message: 'Groq request timed out. Try again.', retryable: true };
+    }
+    return { status: 'error', code: 'network', message: 'AI backend is unreachable. Start the local AI server and try again.', retryable: true };
+  } finally {
+    clearTimeout(timer);
+    options?.signal?.removeEventListener('abort', onExternalAbort);
+  }
+
+  const body: unknown = await response.json().catch(() => null);
+
+  if (response.ok) {
+    const record = (typeof body === 'object' && body !== null ? body : {}) as {
+      operations?: unknown;
+      dropped?: unknown;
+      model?: unknown;
+    };
+    if (!isObject(body) || !Array.isArray(record.operations)) {
+      return { status: 'error', code: 'invalid_response', message: 'Groq returned an unusable response. Nothing was changed.', retryable: false };
+    }
+    if (record.operations.length === 0) {
+      return { status: 'no-change' };
+    }
+    return {
+      status: 'ready',
+      operations: { operations: record.operations },
+      ...(Array.isArray(record.dropped) ? { dropped: record.dropped.filter((entry): entry is string => typeof entry === 'string') } : {}),
+      ...(typeof record.model === 'string' ? { model: record.model } : {}),
+    };
+  }
+
+  const code = errorCodeForStatus(response.status, body);
+  if (code === 'not-configured') {
+    return { status: 'not-configured' };
+  }
+  const record = (typeof body === 'object' && body !== null ? body : {}) as {
+    message?: unknown;
+    retryAfterMs?: unknown;
+    retryable?: unknown;
+  };
+  return {
+    status: 'error',
+    code,
+    message: serverMessage(body, `Groq request failed (HTTP ${response.status}).`),
+    retryable:
+      typeof record.retryable === 'boolean'
+        ? record.retryable
+        : response.status === 429 || response.status >= 500,
+    ...(typeof record.retryAfterMs === 'number' ? { retryAfterMs: record.retryAfterMs } : {}),
+  };
 }

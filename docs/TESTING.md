@@ -670,3 +670,68 @@ retries, no second chargeable call.
 A project with the AI Assistant feature enabled, then one CREATE run
 through diff → policy → human approval → `loadDesign` (native
 validation/audit, visible update, autosave, reload restore).
+
+---
+
+# M8 — BYOM Groq Provider (2026-10-23)
+
+Totals: **178 automated tests** (144 before M8 + 18 `groqOps` engine +
+6 `aiProvider` Groq client + 10 `ai-server` Groq backend), plus `tsc -b`
+and ESLint clean. No new runtime dependencies. Unlayer Cloud AI
+integration untouched.
+
+## What is covered
+
+- `groqOps.test.ts` — inventory (paragraphs only, locked/ID-less/
+  unparseable excluded, truncation, caps, uninspectable → `[]`);
+  validation (whitelisted type, known IDs, non-empty ≤2000 chars,
+  op cap with dropped-reason); application (multi-block, input never
+  mutated, HTML/`$`-pattern escaping, normalization-tolerant match,
+  fail-closed on unknown/duplicate/locked/broken blocks); proposal
+  (ready shape, no-change on empty/identical edits, policy-blocked
+  without side effects, incomplete-diff throw); finalizing (stale,
+  no-change, provider-error passthrough, unusable output →
+  `provider-error`, happy path ready).
+- `aiProvider.test.ts` — Groq 200/dropped/model mapping, empty →
+  no-change, 501 → not-configured, 401/403/429 codes, unusable-body
+  and invalid-input handling with zero fetch calls, same-origin +
+  no-`Authorization` + no key-like tokens in the body, `checkGroqStatus`
+  shape and failure behavior.
+- `ai-server.test.ts` — config defaults/overrides, inventory walk,
+  strict-schema request shape (model, temperature 0, `strict: true`,
+  inventory in system prompt, no key in body), response mapping (valid,
+  empty, all-dropped → `invalid_response`, bad JSON, 401/403/429/400/
+  5xx), loopback status/config/validation/501/create-mode/empty-
+  inventory/proxy tests with `Bearer` assertion and no key leakage.
+
+## Mocks vs real integration
+
+- Mocked: the Groq HTTP boundary (stubbed `fetchImpl`/`fetchFn`) and
+  the agent port in engine tests. Tests verify OUR validation,
+  mapping, escaping, and fail-closed ordering — not the model.
+- Real: inventory/validation/application/diff/policy/finalize code,
+  strict-schema request construction, status mapping, and the App
+  provider wiring (browser QA below).
+- Exactly ONE free-tier generation call was made (below); validation
+  and short-circuit tests never touch the network.
+
+## Live Groq verification (1 call, free tier, 2026-10-23)
+
+Model `openai/gpt-oss-20b` via the real stack (fresh profile, seeded
+2-paragraph design, Groq provider selected). Server: `groq.generate
+.start model=openai/gpt-oss-20b promptChars=133 blocks=2` →
+`groq.generate.done upstreamStatus=200 mappedStatus=200` (~1.9 s).
+
+- “Groq proposal ready. The canvas has not been changed.” with
+  **“2 changes across 2 blocks”**, 4/4 policies Passed, Approve
+  enabled; canvas canonical JSON identical before/after (4775 B).
+- Approve → “Approved change applied successfully.” + “Last applied
+  change” native panel; canvas changed (4885 B); autosave key written;
+  reload → “Saved design restored. Autosave ready.”
+- Zero console errors. Server logs carry statuses/sizes only.
+
+## Still manual / out of scope
+
+- Other `GROQ_MODEL` values (only the default was exercised live).
+- Free-tier 429 path against the real API (mapped + unit-tested).
+- Non-paragraph blocks, create mode, and conversation memory.
