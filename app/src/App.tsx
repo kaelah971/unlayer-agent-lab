@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 import { describeAgent, getAgentDesign, loadAgentDesign } from './engine/unlayerAgent'
-import type { JSONTemplate } from './engine/types'
+import { approveEdit, prepareParagraphEdit, type PreparedParagraphEdit } from './engine/proposals'
 
 function App() {
   const editorRef = useRef<EditorRef>(null)
@@ -13,12 +13,7 @@ function App() {
   const [proposalStatus, setProposalStatus] = useState('No change prepared yet.')
   const [isApplying, setIsApplying] = useState(false)
   const approvalInProgress = useRef(false)
-  const [proposal, setProposal] = useState<{
-    before: string
-    after: string
-    baseDesign: string
-    candidateDesign: unknown
-  } | null>(null)
+  const [proposal, setProposal] = useState<PreparedParagraphEdit | null>(null)
 
   const onReady: EmailEditorProps['onReady'] = (editor) => {
     void checkAgentConnection()
@@ -84,62 +79,9 @@ function App() {
 
     try {
       const original = await getAgentDesign()
-      const candidate = structuredClone(original) as {
-        body?: {
-          rows?: Array<{
-            columns?: Array<{
-              contents?: Array<{
-                type?: string
-                values?: {
-                  textJson?: string
-                  text?: string
-                  locked?: boolean
-                }
-              }>
-            }>
-          }>
-        }
-      }
+      const prepared = prepareParagraphEdit(original, prompt)
 
-      const paragraph = candidate.body?.rows?.[0]?.columns?.[0]?.contents?.[0]
-
-      if (
-        paragraph?.type !== 'paragraph' ||
-        paragraph.values?.locked ||
-        typeof paragraph.values?.textJson !== 'string' ||
-        typeof paragraph.values?.text !== 'string'
-      ) {
-        throw new Error('First content block is not an editable paragraph.')
-      }
-
-      const richText = JSON.parse(paragraph.values.textJson) as {
-        root?: {
-          children?: Array<{
-            children?: Array<{ text?: string }>
-          }>
-        }
-      }
-
-      const textNode = richText.root?.children?.[0]?.children?.[0]
-      const before = textNode?.text
-      const after = prompt.trim()
-
-      if (!after) throw new Error('Enter replacement text first.')
-
-      if (!before || !textNode || !paragraph.values.text.includes(before)) {
-        throw new Error('Paragraph text structure could not be safely updated.')
-      }
-
-      textNode.text = after
-      paragraph.values.textJson = JSON.stringify(richText)
-      paragraph.values.text = paragraph.values.text.replace(before, after)
-
-      setProposal({
-        before,
-        after,
-        baseDesign: JSON.stringify(original),
-        candidateDesign: candidate
-      })
+      setProposal(prepared)
 
       setProposalStatus('Proposal ready. The canvas has not been changed.')
     } catch (error) {
@@ -156,9 +98,34 @@ function App() {
     setProposalStatus('Checking the current design...')
 
     try {
-      const current = await getAgentDesign()
+      const outcome = await approveEdit(
+        {
+          getDesign: getAgentDesign,
+          loadDesign: (design) => loadAgentDesign(design),
+        },
+        proposal,
+        {
+          // The synchronous guard above already covers re-entrancy in this
+          // call path (the ref is set before we reach the runner); the
+          // runner re-checks the flag for other/future callers.
+          alreadyApplying: false,
+          backup: (baseDesign) => {
+            localStorage.setItem(
+              'unlayer-agent-lab:design:pre-approved-edit:v1',
+              baseDesign
+            )
+          },
+          onApplying: () => {
+            setProposalStatus('Applying approved change...')
+          },
+        }
+      )
 
-      if (JSON.stringify(current) !== proposal.baseDesign) {
+      if (outcome.status === 'skipped') {
+        return
+      }
+
+      if (outcome.status === 'stale') {
         setProposal(null)
         setProposalStatus(
           'The design changed after this proposal was prepared. Prepare a new proposal.'
@@ -166,18 +133,8 @@ function App() {
         return
       }
 
-      localStorage.setItem(
-        'unlayer-agent-lab:design:pre-approved-edit:v1',
-        proposal.baseDesign
-      )
-
-      setProposalStatus('Applying approved change...')
-
-      const result = await loadAgentDesign(proposal.candidateDesign as JSONTemplate)
-
-      if (!result.ok || !result.loaded) {
-        const explanation = result.errors?.map((error) => error.message).join('; ')
-        throw new Error(explanation || 'Unlayer rejected the proposed design.')
+      if (outcome.status === 'rejected') {
+        throw new Error(outcome.message)
       }
 
       setProposal(null)
