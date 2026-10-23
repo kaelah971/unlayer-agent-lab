@@ -18,6 +18,13 @@
  *   in M1. A canonical hash replaces this in a later milestone.
  */
 import { diffDesigns, type DesignDiff } from './designDiff';
+import {
+  DEFAULT_POLICY_CONFIG,
+  evaluatePolicies,
+  type PolicyConfig,
+  type PolicyGate,
+  type PolicyResult,
+} from './policies';
 import type { AgentLoadDesignResult, JSONTemplate } from './types';
 
 /** Narrow structural view of the design subtree this transform touches. */
@@ -56,6 +63,11 @@ export interface PreparedParagraphEdit {
   /** Structured local diff. Computed at prepare time; Unlayer validation
    * and audit run only after approval (see `approveEdit`). */
   diff: DesignDiff;
+  /** Application policy findings at prepare time (pre-approval advice).
+   * Unlayer's native validation/audit run only after approval. */
+  policies: PolicyResult[];
+  /** True when a policy FAIL or UNKNOWN blocks submission. */
+  policyBlocked: boolean;
 }
 
 /**
@@ -87,10 +99,17 @@ export function escapeHtml(value: string): string {
  * - `values.text` (HTML) receives the HTML-escaped replacement text via a
  *   replacer function, so `$`-patterns (`$&`, `$'`, …) in user input are
  *   inserted literally instead of being interpreted by `String.replace`.
+ * - Matching tolerates Unlayer's post-load normalization: after an
+ *   approved edit round-trips through the builder, `values.text` may hold
+ *   the escaped form (`&lt;img`) while `textJson` holds the raw text
+ *   (`<img`). The escaped occurrence is then replaced (with the newly
+ *   escaped text), so the same block stays editable without weakening
+ *   the escaping guarantee.
  */
 export function prepareParagraphEdit(
   original: unknown,
   replacementText: string,
+  policyConfig: PolicyConfig = DEFAULT_POLICY_CONFIG,
 ): PreparedParagraphEdit {
   // Fail closed on non-object input (e.g. a null snapshot): the optional
   // chain below would otherwise throw a bare TypeError on `.body`.
@@ -120,15 +139,30 @@ export function prepareParagraphEdit(
     throw new Error('Enter replacement text first.');
   }
 
-  if (!before || !textNode || !paragraph.values.text.includes(before)) {
+  const htmlText = paragraph.values.text;
+  // Unlayer normalizes `values.text` on load (wrapper tags, escaping), so
+  // after one approved round-trip the raw Lexical text may only be present
+  // in its escaped form. Match either, preferring the raw occurrence.
+  let match: string | null = null;
+  if (before) {
+    if (htmlText.includes(before)) {
+      match = before;
+    } else {
+      const escaped = escapeHtml(before);
+      if (htmlText.includes(escaped)) match = escaped;
+    }
+  }
+
+  if (!before || !textNode || match === null) {
     throw new Error('Paragraph text structure could not be safely updated.');
   }
 
   textNode.text = after;
   paragraph.values.textJson = JSON.stringify(richText);
-  paragraph.values.text = paragraph.values.text.replace(before, () => escapeHtml(after));
+  paragraph.values.text = htmlText.replace(match, () => escapeHtml(after));
 
   const candidateDesign = candidate as unknown as JSONTemplate;
+  const evaluation = evaluatePolicies({ candidate: candidateDesign, original, config: policyConfig });
 
   return {
     before,
@@ -136,6 +170,8 @@ export function prepareParagraphEdit(
     baseDesign: JSON.stringify(original),
     candidateDesign,
     diff: diffDesigns(original, candidateDesign),
+    policies: evaluation.results,
+    policyBlocked: evaluation.blocked,
   };
 }
 
@@ -155,6 +191,7 @@ export interface AgentPort {
 export type ApproveOutcome =
   | { status: 'applied'; native: AgentLoadDesignResult }
   | { status: 'stale' }
+  | { status: 'blocked'; policies: PolicyResult[] }
   | { status: 'rejected'; message: string; native: AgentLoadDesignResult }
   | { status: 'skipped'; reason: 'no-proposal' | 'already-applying' };
 
@@ -165,10 +202,12 @@ export type ApproveOutcome =
  * 1. No proposal or an approval already in flight → `skipped` (no I/O).
  * 2. Re-read the live design; mismatch with the base → `stale` (no I/O
  *    beyond the re-read, proposal must be discarded by the caller).
- * 3. Persist the pre-apply backup, then `loadDesign`.
- * 4. `!ok || !loaded` → `rejected` with the joined native error messages
+ * 3. Re-run the policy gate when provided; a blocked gate → `blocked`
+ *    with fresh findings (no backup, no load).
+ * 4. Persist the pre-apply backup, then `loadDesign`.
+ * 5. `!ok || !loaded` → `rejected` with the joined native error messages
  *    plus the full native result for the inspector.
- * 5. Otherwise → `applied`, carrying the native result (protectedElements
+ * 6. Otherwise → `applied`, carrying the native result (protectedElements
  *    and audit included) for display.
  *
  * Errors from the port (e.g. unavailable agent API) propagate to the
@@ -182,6 +221,9 @@ export async function approveEdit(
     backup: (baseDesign: string) => void;
     /** Called after the backup write, right before `loadDesign`. */
     onApplying?: () => void;
+    /** Re-evaluates application policies against the live candidate.
+     * A blocked gate stops the approval before any backup or load. */
+    policyGate?: PolicyGate;
   },
 ): Promise<ApproveOutcome> {
   if (!proposal) {
@@ -195,6 +237,13 @@ export async function approveEdit(
 
   if (isDesignChanged(current, proposal.baseDesign)) {
     return { status: 'stale' };
+  }
+
+  if (options.policyGate) {
+    const gate = options.policyGate.evaluate(proposal.candidateDesign);
+    if (gate.blocked) {
+      return { status: 'blocked', policies: gate.results };
+    }
   }
 
   options.backup(proposal.baseDesign);

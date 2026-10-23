@@ -103,6 +103,7 @@ function lexicalText(textJson: string): string | undefined {
 }
 
 import type { AgentLoadDesignResult } from './types';
+import { createPolicyGate, DEFAULT_POLICY_CONFIG, type PolicyConfig } from './policies';
 
 function makePort(options: {
   liveDesign: unknown;
@@ -220,6 +221,35 @@ describe('prepareParagraphEdit', () => {
     expect(firstParagraphValues(tricky.candidateDesign).text).toBe('<p>$&amp;-$`</p>');
   });
 
+  it('re-edits a block normalized by a prior approval round-trip', () => {
+    // After Unlayer loads an approved edit, values.text may hold the escaped
+    // form while textJson holds the raw text. The next prepare must match
+    // the escaped occurrence instead of failing closed incorrectly.
+    const design = makeDesign(makeParagraphContent('Hello'));
+    const first = prepareParagraphEdit(design, 'A & <tag>');
+    // The second edit starts from the previously approved candidate, exactly
+    // as getDesign would return it after the round-trip.
+    const second = prepareParagraphEdit(first.candidateDesign, 'Final');
+
+    expect(second.before).toBe('A & <tag>');
+    expect(lexicalText(firstParagraphValues(second.candidateDesign).textJson)).toBe('Final');
+    expect(firstParagraphValues(second.candidateDesign).text).toContain('Final');
+    expect(firstParagraphValues(second.candidateDesign).text).not.toContain('&lt;tag&gt;');
+  });
+
+  it('still fails closed when neither raw nor escaped text is present', () => {
+    const design = makeDesign(makeParagraphContent('Hello'));
+    const contents = (
+      design as unknown as {
+        body: { rows: Array<{ columns: Array<{ contents: Array<{ values: { text: string } }> }> }> };
+      }
+    ).body.rows[0].columns[0].contents;
+    contents[0].values.text = '<p>Something else entirely</p>';
+    expect(() => prepareParagraphEdit(design, 'Next')).toThrow(
+      'Paragraph text structure could not be safely updated.',
+    );
+  });
+
   it('16. preserves unrelated image and content blocks', () => {
     const image = { id: 'img-1', type: 'image', values: { src: 'https://x/y.png', alt: 'Y' } };
     const button = { id: 'btn-1', type: 'button', values: { text: 'Buy', href: 'https://x' } };
@@ -251,6 +281,29 @@ describe('prepareParagraphEdit', () => {
     expect(change.before).toBe('Hello world');
     expect(change.after).toBe('Changed');
     expect(change.path).toBe('body.rows[0].columns[0].contents[0].values.textJson');
+  });
+  it('attaches policy findings that pass under the default config', () => {
+    const design = makeDesign(
+      makeParagraphContent('Hello'),
+      [{ id: 'b1', type: 'button', values: { text: 'Buy', href: { name: 'web', values: { href: 'https://example.com/shop', target: '_blank' } } } }],
+    );
+    const prepared = prepareParagraphEdit(design, 'Changed');
+
+    expect(prepared.policies).toHaveLength(4);
+    for (const policy of prepared.policies) expect(policy.verdict).toBe('PASS');
+    expect(prepared.policyBlocked).toBe(false);
+  });
+
+  it('flags policy violations at prepare time without blocking the demo flow', () => {
+    const strict: PolicyConfig = { allowedLinkDomains: ['example.com'], requiredDisclaimer: null, protectedBlockIds: [] };
+    const design = makeDesign(
+      makeParagraphContent('Hello'),
+      [{ id: 'b1', type: 'button', values: { text: 'Buy', href: 'https://evil.example/shop' } }],
+    );
+    const prepared = prepareParagraphEdit(design, 'Changed', strict);
+
+    expect(prepared.policyBlocked).toBe(true);
+    expect(prepared.policies.some((policy) => policy.ruleId === 'allowed-link-domains' && policy.verdict === 'FAIL')).toBe(true);
   });
 });
 
@@ -416,6 +469,70 @@ describe('approveEdit', () => {
     expect(port.getDesign).not.toHaveBeenCalled();
     expect(port.loadDesign).not.toHaveBeenCalled();
     expect(port.backup).not.toHaveBeenCalled();
+  });
+
+  it('blocks approval when the policy gate fails, before any backup or load', async () => {
+    const strict: PolicyConfig = { allowedLinkDomains: ['example.com'], requiredDisclaimer: null, protectedBlockIds: [] };
+    const design = makeDesign(
+      makeParagraphContent('Hello world'),
+      [{ id: 'b1', type: 'button', values: { text: 'Buy', href: 'https://evil.example/shop' } }],
+    );
+    const prepared = prepareParagraphEdit(design, 'New text', strict);
+    expect(prepared.policyBlocked).toBe(true);
+    const port = makePort({ liveDesign: design });
+
+    const outcome = await approveEdit(portOf(port), prepared, {
+      alreadyApplying: false,
+      backup: port.backup,
+      policyGate: createPolicyGate(strict, prepared.baseDesign),
+    });
+
+    expect(outcome.status).toBe('blocked');
+    expect(port.getDesign).toHaveBeenCalledTimes(1);
+    expect(port.backup).not.toHaveBeenCalled();
+    expect(port.loadDesign).not.toHaveBeenCalled();
+    expect(port.onApplying).not.toHaveBeenCalled();
+  });
+
+  it('permits approval with advisory warnings', async () => {
+    const design = makeDesign(
+      makeParagraphContent('Hello world'),
+      [{ id: 'b1', type: 'button', values: { text: 'Buy', href: 'https://external.example/shop' } }],
+    );
+    const prepared = prepareParagraphEdit(design, 'New text');
+    expect(prepared.policyBlocked).toBe(false);
+    expect(prepared.policies.some((policy) => policy.verdict === 'WARN')).toBe(true);
+    const port = makePort({ liveDesign: design });
+
+    const outcome = await approveEdit(portOf(port), prepared, {
+      alreadyApplying: false,
+      backup: port.backup,
+      onApplying: port.onApplying,
+      policyGate: createPolicyGate(DEFAULT_POLICY_CONFIG, prepared.baseDesign),
+    });
+
+    expect(outcome.status).toBe('applied');
+    expect(port.loadDesign).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks policies at approval time against the current config', async () => {
+    const design = makeDesign(
+      makeParagraphContent('Hello world'),
+      [{ id: 'b1', type: 'button', values: { text: 'Buy', href: 'https://evil.example/shop' } }],
+    );
+    const prepared = prepareParagraphEdit(design, 'New text');
+    expect(prepared.policyBlocked).toBe(false);
+    const strict: PolicyConfig = { allowedLinkDomains: ['example.com'], requiredDisclaimer: null, protectedBlockIds: [] };
+    const port = makePort({ liveDesign: design });
+
+    const outcome = await approveEdit(portOf(port), prepared, {
+      alreadyApplying: false,
+      backup: port.backup,
+      policyGate: createPolicyGate(strict, prepared.baseDesign),
+    });
+
+    expect(outcome.status).toBe('blocked');
+    expect(port.loadDesign).not.toHaveBeenCalled();
   });
 
   it('stale check compares serialized designs', () => {

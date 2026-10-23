@@ -10,6 +10,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { prepareParagraphEdit } from '../engine/proposals';
+import type { PolicyConfig } from '../engine/policies';
 import type { AgentLoadDesignResult } from '../engine/types';
 import { ChangeInspector, NativeResultPanel } from './ChangeInspector';
 
@@ -65,6 +66,36 @@ function makeDesign(text: string): unknown {
 }
 
 const noop = (): void => {};
+
+function makeDesignWithButton(href: string): unknown {
+  return {
+    counters: {},
+    body: {
+      rows: [
+        {
+          id: 'row-0',
+          cells: [1],
+          columns: [
+            {
+              id: 'row-0-col-0',
+              contents: [
+                {
+                  id: 'para-1',
+                  type: 'paragraph',
+                  values: { text: '<p>Hello</p>', textJson: makeRichText('Hello') },
+                },
+                { id: 'b1', type: 'button', values: { text: 'Buy', href } },
+              ],
+              values: {},
+            },
+          ],
+          values: {},
+        },
+      ],
+      values: {},
+    },
+  };
+}
 
 describe('ChangeInspector', () => {
   it('renders the summary, counts, and before/after values', () => {
@@ -123,6 +154,38 @@ describe('ChangeInspector', () => {
 
     expect(html).toContain('Applying...');
     expect(html).toContain('disabled');
+  });
+});
+
+describe('ChangeInspector policies', () => {
+  const strict: PolicyConfig = { allowedLinkDomains: ['example.com'], requiredDisclaimer: null, protectedBlockIds: [] };
+
+  it('shows failing policies and blocks approval', () => {
+    const proposal = prepareParagraphEdit(makeDesignWithButton('https://evil.example/shop'), 'Goodbye', strict);
+    expect(proposal.policyBlocked).toBe(true);
+    const html = renderToStaticMarkup(
+      <ChangeInspector proposal={proposal} isApplying={false} rejection={null} onApprove={noop} onDiscard={noop} />,
+    );
+
+    expect(html).toContain('Application policy checks');
+    expect(html).toContain('Allowed link domains');
+    expect(html).toContain('Failed');
+    expect(html).toContain('Approval blocked by application policy');
+    expect(html).toContain('separate from Unlayer');
+    expect(html).toContain('disabled');
+  });
+
+  it('shows warnings without blocking approval', () => {
+    const proposal = prepareParagraphEdit(makeDesignWithButton('https://external.example/shop'), 'Goodbye');
+    expect(proposal.policyBlocked).toBe(false);
+    const html = renderToStaticMarkup(
+      <ChangeInspector proposal={proposal} isApplying={false} rejection={null} onApprove={noop} onDiscard={noop} />,
+    );
+
+    expect(html).toContain('External link target');
+    expect(html).toContain('Warning');
+    expect(html).not.toContain('Approval blocked by application policy');
+    expect(html).not.toContain('disabled');
   });
 });
 

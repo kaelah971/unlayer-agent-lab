@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 import { describeAgent, getAgentDesign, loadAgentDesign } from './engine/unlayerAgent'
 import { approveEdit, prepareParagraphEdit, type PreparedParagraphEdit } from './engine/proposals'
+import { createPolicyGate, DEFAULT_POLICY_CONFIG } from './engine/policies'
 import type { AgentLoadDesignResult } from './engine/types'
 import { ChangeInspector, NativeResultPanel } from './shared/ChangeInspector'
 import { InspectorErrorBoundary } from './shared/ErrorBoundary'
@@ -122,6 +123,7 @@ function App() {
               baseDesign
             )
           },
+          policyGate: createPolicyGate(DEFAULT_POLICY_CONFIG, proposal.baseDesign),
           onApplying: () => {
             setProposalStatus('Applying approved change...')
           },
@@ -137,6 +139,14 @@ function App() {
         setRejection(null)
         setProposalStatus(
           'The design changed after this proposal was prepared. Prepare a new proposal.'
+        )
+        return
+      }
+
+      if (outcome.status === 'blocked') {
+        setProposal({ ...proposal, policies: outcome.policies, policyBlocked: true })
+        setProposalStatus(
+          'Blocked by application policy. Review the failing checks above.'
         )
         return
       }

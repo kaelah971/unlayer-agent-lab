@@ -15,6 +15,21 @@
 import type { PreparedParagraphEdit } from '../engine/proposals';
 import type { AgentLoadDesignResult } from '../engine/types';
 
+function verdictText(verdict: string): string {
+  switch (verdict) {
+    case 'PASS':
+      return 'Passed';
+    case 'WARN':
+      return 'Warning';
+    case 'FAIL':
+      return 'Failed';
+    case 'UNKNOWN':
+      return 'Unknown';
+    default:
+      return verdict;
+  }
+}
+
 function kindText(kind: string): string {
   switch (kind) {
     case 'added':
@@ -100,6 +115,25 @@ export function ChangeInspector({
         </div>
       )}
 
+      <h4>Application policy checks</h4>
+      <p>
+        Checked locally before approval — separate from Unlayer&apos;s native validation and audit, which run
+        only after you approve.
+      </p>
+      <ul aria-label="Policy checks">
+        {proposal.policies.map((policy) => (
+          <li key={policy.ruleId}>
+            <strong>{policy.label}</strong> — {verdictText(policy.verdict)} — {policy.message}
+            {policy.blockIds.length > 0 ? <span> — Blocks: {policy.blockIds.join(', ')}</span> : null}
+          </li>
+        ))}
+      </ul>
+      {proposal.policyBlocked ? (
+        <p>
+          <strong>Approval blocked by application policy.</strong> Resolve the failing checks above.
+        </p>
+      ) : null}
+
       {rejection && (
         <div role="alert">
           <p>
@@ -119,7 +153,7 @@ export function ChangeInspector({
         </div>
       )}
 
-      <button type="button" disabled={isApplying} onClick={onApprove}>
+      <button type="button" disabled={isApplying || proposal.policyBlocked} onClick={onApprove}>
         {isApplying ? 'Applying...' : 'Approve Change'}
       </button>
       <button type="button" onClick={onDiscard}>

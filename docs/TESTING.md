@@ -207,3 +207,159 @@ The diff is **local and structural**: it describes what the proposal
 7. Tab through Approve/Discard with a screen reader → labels and
    `role="alert"` rejection announced; `aria-label="Design changes"`
    list discoverable.
+
+---
+
+# M4 — Application Policy Guardrails and Integration QA
+
+Totals after M4: **71 automated tests** (19 proposal engine incl. round-trip
+ robustness + 20 design diff + 19 policy engine + 5 approval/policy
+ integration + 8 inspector UI), all Node-mode Vitest, plus `tsc -b` and
+ `eslint` clean. No new runtime dependencies.
+
+Additionally, M4 performed **real browser integration QA** driving the
+ live app in system Chrome (headless + CDP, no extra browsers installed):
+ agent connection, blank-canvas validation message, seeding, prepare →
+ inspector rendering with a real diff, approval → canvas update, native
+ result display, HTML-escaping end-to-end (stored design holds `&lt;img`,
+ never a live tag), stale-proposal rejection after an external edit, and
+ refresh recovery of agent-approved edits (`Saved design restored`).
+ See §M4 browser QA below.
+
+## Available rules (`app/src/engine/policies.ts`)
+
+| Rule | ID | Fails on | Advisory? |
+|---|---|---|---|
+| Allowed link domains | `allowed-link-domains` | Button URL host not in the allowlist | No — FAIL |
+| Required disclaimer | `required-disclaimer` | Configured text/block-id absent | No — FAIL |
+| Protected sections | `protected-sections` | App-protected block changed, moved, or removed | No — FAIL |
+| External link target | `external-link-target` | External button link without `target="_blank"` | Yes — WARN only |
+
+Every result carries `{ ruleId, label, verdict, message, blockIds, paths }`.
+ Inputs are never mutated; evaluation is deterministic (no I/O, no dates).
+ Each rule is exception-guarded: a bug becomes `UNKNOWN`, never a false
+ `PASS`.
+
+## Configuration examples
+
+```ts
+import { evaluatePolicies, type PolicyConfig } from './engine/policies';
+
+const config: PolicyConfig = {
+  allowedLinkDomains: ['example.com'],   // exact hosts, lowercase-compared; [] = off
+  requiredDisclaimer: { text: 'You received this because you subscribed.' },
+  // ...or { blockId: 'disclaimer-1' }; either satisfies the rule (OR)
+  protectedBlockIds: ['brand-header'],
+};
+const evaluation = evaluatePolicies({ candidate, original, config });
+// evaluation = { results, blocked, complete }
+```
+
+The app ships with `DEFAULT_POLICY_CONFIG` (everything off/empty), so
+ existing users and the paragraph demo are never blocked: every rule
+ passes vacuously and the inspector simply lists the passing checks.
+
+## Policy evaluation lifecycle
+
+1. **Prepare** — `prepareParagraphEdit(original, text, config?)` evaluates
+   the candidate immediately and stores `policies` + `policyBlocked` on
+   the proposal. The inspector renders the findings as pre-approval
+   advice; Approve is disabled while `policyBlocked`.
+2. **Approve (recheck)** — `approveEdit` runs an optional `policyGate`
+   (`createPolicyGate(config, baseDesign)`) after the stale check and
+   **before** any backup or `loadDesign`. A blocked gate returns
+   `{ status: 'blocked', policies }` — no backup write, no native call.
+   The app refreshes the proposal's findings and shows
+   “Blocked by application policy.”
+3. **Native validation** — only `loadDesign` (post-approval) produces
+   Unlayer errors/audit; those render in the existing rejection/panel UI.
+
+## PASS / WARN / FAIL / UNKNOWN semantics
+
+- `PASS` — the rule verified compliance (or is not configured).
+- `WARN` — advisory only (today: external links without `_blank`).
+   Visible explanation, approval permitted.
+- `FAIL` — the rule was violated (disallowed domain, missing
+   disclaimer, changed/moved/removed protected block). Blocks submission.
+- `UNKNOWN` — the engine could not verify (missing/relative/non-web
+   URL, uninspectable design, corrupt base snapshot, incomplete diff on
+   the protected id). **Fail-closed: blocks submission** like FAIL.
+   Reported honestly with the reason; resolve the ambiguity to proceed.
+
+Conservative asymmetry is deliberate: allowlist-enforcing rules fail
+ closed on ambiguity (“missing or ambiguous URLs never silently PASS”),
+ while the advisory rule only reports what it can verify and notes what
+ it skipped (relative/non-web links), so ordinary content never blocks
+ under the default config.
+
+## Application-policy vs native-audit distinction
+
+- **Application policies** (`policies.ts`): ours, pre-approval, instant,
+  local. Labeled in the inspector as “Checked locally before approval —
+  separate from Unlayer's native validation and audit.”
+- **Native validation/audit** (`loadDesign` result): Unlayer's,
+  post-approval only — `ok/loaded`, `errors[]` with `path/message/code`,
+  `protectedElements`, `audit`. Never re-implemented, never previewed
+  (calling `loadDesign` applies valid changes).
+
+## Unsupported cases and remaining risks
+
+- Subdomain matching is exact-host only (`shop.example.com` ≠
+  `example.com`); no wildcard support — document in configs.
+- Disclaimer text search covers `text`/`textJson` fields only (paragraph,
+  text, heading, button plain text); alt text, menus, and custom blocks
+  are not searched — absence there yields FAIL/UNKNOWN as documented.
+- Only `button` blocks are link-checked; menu blocks are out of scope.
+- Button href object shapes beyond `{ name, values: { href, target } }`
+  and plain strings fall back to UNKNOWN (fail-closed).
+- Non-content settings drift is still diff-level only (limitation), not a
+  policy input.
+- `not_ready` still has no retry; stale detection still `JSON.stringify`.
+- A serially ambiguous design (duplicate IDs everywhere) yields UNKNOWN
+  guidance, which blocks until the design is fixed — intended, but worth
+  knowing for template authors.
+
+## M4 browser QA (actually performed, 2026-10-23)
+
+Method: dev server + system Chrome headless driven over CDP with Node's
+ built-in WebSocket (no Playwright/Puppeteer download). Fresh profile
+ per run (localStorage cleared) except where restoration was tested.
+
+Verified PASS in the live builder:
+
+- Agent connection: “Connected to 1 agent-enabled editor(s).”
+- Blank canvas validation: prepare with no paragraph →
+  “First content block is not an editable paragraph.”
+- Seeded paragraph via `agent.loadDesign` → `ok:true, loaded:true`.
+- Prepare → “Proposal ready. The canvas has not been changed.” +
+  inspector rendered with a real diff line (kind, block id, JSON path,
+  before/after, “HTML text updated to match”).
+- Approve → “Approved change applied successfully.” + “Last applied
+  change” panel with ok/loaded/audit display.
+- Escaping end-to-end: stored `values.text` holds `&lt;img …&gt;`, no live
+  tag; `textJson` holds raw text.
+- Repeat-edit robustness (new): second prepare on the normalized design
+  succeeds (was failing before the escaped-match fix).
+- Stale rejection: external `loadDesign` edit → approve → “The design
+  changed after this proposal was prepared.”, canvas kept.
+- Refresh recovery: reload → “Saved design restored. Autosave ready.”
+  with the approved content present.
+
+Findings that changed code (both covered by new unit tests):
+
+1. **Blank templates start with an empty row**, so the first-block
+   transform cannot prepare on a fresh canvas (pre-existing workflow
+   limit, preserved; QA seeded the paragraph into the empty row).
+2. **Post-approval normalization broke re-edits**: Unlayer returns
+   `values.text` with normalized wrappers/escapes while `textJson` keeps
+   raw text, so the raw-`includes` guard failed closed on every second
+   edit of the same block. Fixed by also matching the escaped form
+   (preferring raw), with a still-fail-closed fallback — escaping
+   guarantee unchanged.
+3. Duplicate `loadDesign` of an existing block id is rejected by native
+   validation (`ok:false`), observed when a stale prior run's design was
+   re-seeded — confirms fail-closed native behavior.
+
+Not covered by browser QA (still manual on a real machine): screen-
+ reader pass, 360px responsive check, quota/interrupted-save paths,
+ StrictMode remount leaks, WebMCP, multi-editor targeting.
