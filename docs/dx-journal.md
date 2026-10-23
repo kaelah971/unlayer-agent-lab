@@ -56,3 +56,17 @@ Implemented design restoration using loadDesign and browser localStorage. Added 
 Verification: Existing design survived reopening the application days later. A newly edited paragraph triggered autosave and survived a browser refresh without manual saving.
 Result: Core autosave workflow PASS.
 Remaining tests: Rapid typing, failed storage, interrupted saves, malformed design recovery, and event-listener cleanup.
+
+### Milestone 5 - Agent API Investigation
+
+Builder configured with version latest.
+Verified unlayer.agent.describe() and getDesign().
+Observed design schemaVersion 28 and paragraph textJson.
+Prepared a modified copy of the original design, with a separate local backup.
+Submitted the modified design using unlayer.agent.loadDesign().
+Result: ok=true, loaded=true, errorCount=0.
+The paragraph visibly changed on the canvas without manual editing.
+Autosave reported successful saving after the agent API modification.
+
+Remaining: Verify refresh recovery of agent edits, implement reusable React integration, human approval, error handling, and real AI instructions.
+Note: The editing test used browser Console JavaScript, not an AI model.
