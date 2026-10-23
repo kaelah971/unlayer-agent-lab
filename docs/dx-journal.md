@@ -50,3 +50,9 @@ Successfully embedded Unlayer Builder using react-email-editor 2.1.3. Added a Pa
 Successfully embedded Unlayer Builder using react-email-editor 2.1.3. The editor loaded in Chrome at localhost:5173. Dragged a Paragraph component onto the canvas and changed its text to Hello from Unlayer Agent Lab!
 Result: PASS
 Next: Test the saveDesign API to retrieve the actual design JSON.
+
+### Milestone 4 - Local Persistence and Autosave
+Implemented design restoration using loadDesign and browser localStorage. Added debounced autosave using Unlayer's design:updated event and saveDesign API.
+Verification: Existing design survived reopening the application days later. A newly edited paragraph triggered autosave and survived a browser refresh without manual saving.
+Result: Core autosave workflow PASS.
+Remaining tests: Rapid typing, failed storage, interrupted saves, malformed design recovery, and event-listener cleanup.

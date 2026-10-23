@@ -1,5 +1,5 @@
 ﻿import { useRef, useState } from 'react'
-import EmailEditor, { type EditorRef } from 'react-email-editor'
+import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 
 function App() {
   const editorRef = useRef<EditorRef>(null)
@@ -8,6 +8,52 @@ function App() {
   const [design, setDesign] = useState<unknown>(null)
   const [status, setStatus] = useState('No design captured yet.')
 
+  const onReady: EmailEditorProps['onReady'] = (editor) => {
+    let saveTimer: ReturnType<typeof setTimeout> | undefined
+    let listening = false
+
+    const startAutosave = () => {
+      if (listening) return
+      listening = true
+      editor.addEventListener('design:updated', () => {
+        if (saveTimer) clearTimeout(saveTimer)
+        setStatus('Saving changes...')
+        saveTimer = setTimeout(() => {
+          editor.saveDesign((result) => {
+            try {
+              localStorage.setItem('unlayer-agent-lab:design:v1', JSON.stringify(result))
+              setStatus('All changes saved automatically.')
+            } catch {
+              setStatus('Autosave failed. Your latest changes may not be stored.')
+            }
+          })
+        }, 1000)
+      })
+    }
+
+    try {
+      const stored = localStorage.getItem('unlayer-agent-lab:design:v1')
+      if (!stored) {
+        startAutosave()
+        setStatus('Autosave ready.')
+        return
+      }
+      const saved = JSON.parse(stored) as Parameters<typeof editor.loadDesign>[0]
+      if (!saved || typeof saved !== 'object' || !('body' in saved)) {
+        setStatus('Invalid saved design. Autosave paused.')
+        return
+      }
+      editor.addEventListener('design:loaded', () => {
+        startAutosave()
+        setStatus('Saved design restored. Autosave ready.')
+      })
+      editor.loadDesign(saved)
+      setStatus('Restoring saved design...')
+    } catch {
+      setStatus('Restoration failed. Autosave paused to protect saved data.')
+    }
+  }
+
   const captureDesign = () => {
     const editor = editorRef.current?.editor
     if (!editor) {
@@ -15,8 +61,9 @@ function App() {
       return
     }
     editor.saveDesign((result) => {
+      window.localStorage.setItem('unlayer-agent-lab:design:v1', JSON.stringify(result))
       setDesign(result)
-      setStatus('Design captured successfully.')
+      setStatus('Design saved in this browser.')
     })
   }
 
@@ -39,13 +86,14 @@ function App() {
 
       <section aria-label='Visual editor'>
         <h2>Visual Editor</h2>
-        <EmailEditor ref={editorRef} minHeight='650px' />
+        <p role='status'>{status}</p>
+        <EmailEditor ref={editorRef} onReady={onReady} minHeight='650px' />
       </section>
 
       {showDeveloper && (
         <section aria-label='Developer tools'>
           <h2>Developer Tools</h2>
-          <button type='button' onClick={captureDesign}>Capture Design JSON</button>
+          <button type='button' onClick={captureDesign}>Save Design Locally</button>
           <p role='status'>{status}</p>
           {design !== null && (
             <pre style={{ maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
@@ -59,3 +107,6 @@ function App() {
 }
 
 export default App
+
+
+
