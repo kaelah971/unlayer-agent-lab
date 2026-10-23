@@ -15,6 +15,10 @@ main > section h2 { font-size: 20px; margin: 0 0 14px; }
 section[aria-label="AI instructions"] textarea { display: block; width: 100%; min-height: 110px; box-sizing: border-box; padding: 14px; border: 1px solid #d1d5db; border-radius: 10px; font: inherit; resize: vertical; }
 main button { padding: 9px 14px; border: 1px solid #d1d5db; border-radius: 8px; background: white; cursor: pointer; }
 main button:disabled { opacity: 0.55; cursor: not-allowed; }
+main button:focus-visible, main textarea:focus-visible, main input:focus-visible, main summary:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
+}
 section[aria-label="AI instructions"] > div { margin-top: 12px; }
 section[aria-label="AI instructions"] > p { font-size: 13px; margin: 10px 0 0; }
 section[aria-label="Developer tools"] pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 10px; }

@@ -551,3 +551,77 @@ Lab flows (re-verified):
 - Evidence persistence across reloads (in-memory, cap 100).
 - `preview(device)`, exports, undo controls, and policy playground
   remain future work (see M7 recommendation in the milestone report).
+
+---
+
+# M7A — Release Readiness and Product QA
+
+Totals after M7A: **144 automated tests** (unchanged — M7A added no
+production modules, only release hardening), plus `tsc -b` and `eslint`
+clean. Product changes in M7A: removed dead `app/src/App.css` (Vite
+template leftover, never imported) and added a `:focus-visible` outline
+rule for keyboard users. No engine, Lab, server, or behavior changes.
+
+## Method
+
+Recovery run (2026-10-23) after an interrupted session: baseline
+re-verified first (144 pass, build + lint clean), then the previous
+session's CDP harnesses were reused verbatim (`m7a-qa1/2/2b/dbg.cjs`)
+plus two focused follow-ups (`m7a-qa3/4/5.cjs`). Stack: dev server +
+system Chrome headless (`--headless=new`, fresh profile per run) driven
+over CDP with Node's built-in WebSocket. No Playwright/Puppeteer, no
+new dependencies, one Chrome at a time (8 GB RAM discipline). The
+one-off harnesses were removed after the run; their results are
+recorded here and in `docs/M7A_PROGRESS.md`.
+
+## What the browser proved (all with zero console errors)
+
+- **Workspaces:** Studio ↔ Lab ↔ Studio keeps exactly 1 iframe; the
+  canonical (key-sorted) design JSON is identical before/after
+  switches; tabs carry `aria-pressed` + `aria-controls`.
+- **Proposals:** empty prompt rejected; prepare shows “1 change across
+  1 block” with the canvas untouched; approve applies and the canvas
+  contains the new text; stale approve after an external edit is
+  rejected and the external edit survives; discard clears cleanly.
+- **Persistence:** autosave writes the `unlayer-agent-lab:design:v1`
+  key with the seeded marker; reload shows “Saved design restored.
+  Autosave ready.” with the marker live on the canvas.
+- **Explorer:** connection headline + editor list, schema block, and
+  block inventory (seeded `seed-p` with JSON path) all render.
+- **Scenarios:** 5/5 pass, 0 fail, and the canonical live-canvas JSON
+  is byte-identical before/after (3068 = 3068 bytes) — isolation
+  verified on normalized content, not just lengths.
+- **Evidence export:** the exact downloadable bytes were captured via
+  an in-page blob hook: 2051 B, keys `[exportedAt, generator, warning,
+  entryCount, entries]`, `entryCount` 5 = 5 entries, no `designs` key
+  by default, warning + `unlayer-agent-lab` generator present, sources
+  `[simulated]`, zero key-like leaks. Opt-in snapshot adds
+  `designs.currentDesign` (6174 B), sanitized, leak-free.
+- **XSS probe:** `<img src=x onerror=alert(1)>` as replacement text →
+  0 live `img` elements in Studio, no live tag in `innerHTML`; the
+  stored `values.text` holds `&lt;img` with no live open tag. Raw text
+  survives only inside Lexical `textJson` (by design — the documented
+  `textJson` ↔ `text` consistency guarantee), where React renders it
+  as text.
+- **Responsive:** emulated 360 px viewport — `innerWidth` 360,
+  `documentElement.scrollWidth` 360, no horizontal overflow. (Real-device
+  hardware check still manual.)
+- **Keyboard/a11y:** genuine Tab order is logical (Studio → Lab →
+  Developer Mode → textarea → Prepare → AI radios); 10 tabbable
+  targets, 0 positive tabindex, 0 unlabeled buttons, 4 live regions,
+  solid 2 px `:focus-visible` outline on every stop.
+- **AI honesty:** without a key the UI shows the not-configured note
+  and Generate stays disabled; manual editing is unaffected.
+- **Secrets:** bundle grep for `unlayer_sk_` / `UNLAYER_API_KEY` → 0
+  matches; only `app/server/ai-server.ts` reads the key; the browser
+  sends same-origin fetches with no `Authorization` header.
+
+## Honestly not verified (unchanged from M6, now gated)
+
+- Live Unlayer Cloud AI generation end-to-end — BLOCKED, no key.
+- File download landing on disk in headless mode — Chrome reports
+  export success but writes no file (zero `downloadWillBegin` events
+  even for a synthetic blob click). Verified the exact bytes instead;
+  a real-browser click-and-open is a manual spot-check.
+- Screen-reader pass, real-device 360 px, quota/429 UX, multi-turn
+  conversation behavior.
