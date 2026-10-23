@@ -102,18 +102,22 @@ function lexicalText(textJson: string): string | undefined {
   return parsed.root?.children?.[0]?.children?.[0]?.text;
 }
 
+import type { AgentLoadDesignResult } from './types';
+
 function makePort(options: {
   liveDesign: unknown;
-  loadResult?: { ok: boolean; loaded: boolean; errors?: Array<{ message: string }> };
+  loadResult?: AgentLoadDesignResult;
 }) {
+  const loadResult: AgentLoadDesignResult = {
+    ok: true,
+    loaded: true,
+    errors: [],
+    errorCount: 0,
+    ...options.loadResult,
+  };
   return {
     getDesign: vi.fn(async () => structuredClone(options.liveDesign)),
-    loadDesign: vi.fn(async () => ({
-      ok: true,
-      loaded: true,
-      errors: [],
-      ...options.loadResult,
-    })),
+    loadDesign: vi.fn(async () => loadResult),
     backup: vi.fn(),
     onApplying: vi.fn(),
   };
@@ -231,6 +235,23 @@ describe('prepareParagraphEdit', () => {
     expect(contents[1]).toEqual(image);
     expect(contents[2]).toEqual(button);
   });
+
+  it('attaches a structured local diff to the proposal', () => {
+    const design = makeDesign(makeParagraphContent('Hello world'));
+    const prepared = prepareParagraphEdit(design, 'Changed');
+
+    expect(prepared.diff.complete).toBe(true);
+    expect(prepared.diff.limitations).toEqual([]);
+    expect(prepared.diff.summary).toBe('1 change across 1 block');
+    expect(prepared.diff.counts).toEqual({ added: 0, removed: 0, modified: 1, moved: 0 });
+    expect(prepared.diff.changes).toHaveLength(1);
+    const [change] = prepared.diff.changes;
+    expect(change.kind).toBe('modified');
+    expect(change.label).toBe('Paragraph text');
+    expect(change.before).toBe('Hello world');
+    expect(change.after).toBe('Changed');
+    expect(change.path).toBe('body.rows[0].columns[0].contents[0].values.textJson');
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -241,7 +262,26 @@ describe('approveEdit', () => {
   it('10. approves a valid proposal against an unchanged design', async () => {
     const design = makeDesign(makeParagraphContent('Hello world'));
     const prepared = prepareParagraphEdit(design, 'Approved text');
-    const port = makePort({ liveDesign: design });
+    const loadResult: AgentLoadDesignResult = {
+      ok: true,
+      loaded: true,
+      errors: [],
+      errorCount: 0,
+      protectedElements: ['locked-1'],
+      audit: {
+        status: 'PASS',
+        issues: [
+          {
+            severity: 'WARNING',
+            title: 'Missing alt text',
+            description: 'An image has no alternative text.',
+            elementId: 'img-1',
+          },
+        ],
+        issueCount: 1,
+      },
+    };
+    const port = makePort({ liveDesign: design, loadResult });
 
     const outcome = await approveEdit(portOf(port), prepared, {
       alreadyApplying: false,
@@ -249,7 +289,7 @@ describe('approveEdit', () => {
       onApplying: port.onApplying,
     });
 
-    expect(outcome).toEqual({ status: 'applied' });
+    expect(outcome).toEqual({ status: 'applied', native: loadResult });
     expect(port.getDesign).toHaveBeenCalledTimes(1);
     expect(port.backup).toHaveBeenCalledTimes(1);
     expect(port.backup).toHaveBeenCalledWith(prepared.baseDesign);
@@ -304,17 +344,26 @@ describe('approveEdit', () => {
   it('13. surfaces Unlayer validation failures without applying', async () => {
     const design = makeDesign(makeParagraphContent('Hello world'));
     const prepared = prepareParagraphEdit(design, 'New text');
-    const port = makePort({
-      liveDesign: design,
-      loadResult: {
-        ok: false,
-        loaded: false,
-        errors: [
-          { message: 'Paragraph is missing values.textJson' },
-          { message: 'Unknown block type' },
-        ],
-      },
-    });
+    const loadResult: AgentLoadDesignResult = {
+      ok: false,
+      loaded: false,
+      errors: [
+        {
+          path: 'body.rows[0].columns[0].contents[0].values.textJson',
+          message: 'Paragraph is missing values.textJson',
+          code: 'invalid_type',
+        },
+        {
+          path: 'body.rows[0].columns[0].contents[1]',
+          message: 'Unknown block type',
+          code: 'unknown_type',
+        },
+      ],
+      errorCount: 2,
+      protectedElements: ['locked-9'],
+      audit: { status: 'FAIL', issues: [], issueCount: 0 },
+    };
+    const port = makePort({ liveDesign: design, loadResult });
 
     const outcome = await approveEdit(portOf(port), prepared, {
       alreadyApplying: false,
@@ -324,6 +373,7 @@ describe('approveEdit', () => {
     expect(outcome).toEqual({
       status: 'rejected',
       message: 'Paragraph is missing values.textJson; Unknown block type',
+      native: loadResult,
     });
     expect(port.backup).toHaveBeenCalledTimes(1); // backup precedes the load, as in production
   });
@@ -338,6 +388,7 @@ describe('approveEdit', () => {
       ok: true,
       loaded: true,
       errors: [],
+      errorCount: 0,
     }));
     const backup = vi.fn();
 

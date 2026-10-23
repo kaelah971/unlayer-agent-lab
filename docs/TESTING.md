@@ -94,3 +94,116 @@ them yet — M3/M4).
   `not_ready`) are preserved in the adapter return but not yet rendered.
 - `not_ready` (builder still loading) has no retry; it surfaces as a
   generic failure.
+
+---
+
+# M3 — Agent Change Inspector Foundation
+
+Totals after M3: **43 automated tests** (17 proposal engine + 20 design
+ diff + 6 inspector UI), all Node-mode Vitest, plus `tsc -b` and `eslint`
+ clean. No new runtime dependencies; suite still runs in well under a
+ second.
+
+## How design diffs are calculated (`app/src/engine/designDiff.ts`)
+
+`diffDesigns(before, after)` walks `body.rows → columns → contents`
+ (plus `body.headers` / `body.footers` when present) on both snapshots
+ and:
+
+1. Indexes content blocks by stable Unlayer `id`.
+2. Pairs same-`id` blocks; unpaired ids become `added` / `removed`.
+3. Emits `moved` when a paired block changed parent path or index,
+   independent of content edits.
+4. Compares each paired block's `type` and per-key `values`. Changed
+   fields become `modified` ops with readable labels (`Link URL`,
+   `Image source`, `Paragraph text`) and truncated before/after strings.
+5. **Collapses** a co-occurring `textJson` + HTML `text` change into one
+   logical `Paragraph text` op (Lexical JSON is the source of truth; the
+   HTML note reads “HTML text updated to match”). Formatting-only and
+   unparseable-`textJson` cases degrade to explicit raw-field ops, never
+   to silence.
+6. Summarizes (`N changes across M blocks`) with per-kind counts.
+
+The diff is **local and structural**: it describes what the proposal
+ would change. It is computed at prepare time and stored on the proposal
+ (`PreparedParagraphEdit.diff`). It is labeled as such in the UI.
+
+## Which changes are supported
+
+- Paragraph/text edits (collapsed to one logical change).
+- Added and removed blocks (id, type, JSON path).
+- Property edits on any block type (button `href`, image `src`, …).
+- Nested rows/columns and header/footer sections (paths preserved).
+- Reorders and cross-column moves (`moved`, with previous location).
+- Block type changes on a reused id (`Block type` modified op).
+- Sibling blocks are verified untouched (no ops emitted for them).
+- Inputs are never mutated; before/after values are truncated display
+  strings (140 chars).
+
+## What is uncertain or unsupported (conservative by design)
+
+- Blocks **without stable IDs** are paired by position as a best effort;
+  the diff is marked `complete: false` with a `limitations` entry.
+- **Duplicate IDs** are paired by order; `complete: false` + limitation.
+- Unrecognized structures (non-object designs, missing `body`/`rows`)
+  yield **zero changes** + `complete: false`: the engine withholds guesses
+  rather than reporting an “added everything” diff against an unreadable
+  baseline.
+- Non-content settings (`body`/`row`/`column` `values`) are **not
+  itemized**; positionally aligned settings are compared and any drift
+  sets `complete: false` with a limitation. `counters` are ignored as
+  bookkeeping.
+- Unparseable `textJson` falls back to raw-field ops + limitation.
+- The first-paragraph-only proposal transform is unchanged (manual-test
+  scope); the diff engine itself is fully general.
+
+## When native audit results become available
+
+**Only after approval.** `loadDesign` applies valid changes, so it is
+ never called to “preview” an audit. The flow is:
+
+1. Prepare → local diff shown, labeled as a structural preview. No native
+   contact except the initial `getDesign`.
+2. Approve → stale re-check → backup → `loadDesign` → the **full native
+   result** (`ok`/`loaded`, `errors[]` with `path`/`message`/`code`,
+   `protectedElements`, `audit`) returns.
+3. Applied → `NativeResultPanel` (“Last applied change”) shows ok/loaded,
+   protected elements, and audit status/issues.
+4. Rejected → the proposal stays open; the inspector's alert lists each
+   native error with path, message, and code (`invalid_type`,
+   `unknown_type`, …). Nothing on the canvas changed.
+
+`approveEdit` now carries the native result on both outcomes
+ (`{ status: 'applied' | 'rejected', native }`); `AgentPort.loadDesign`
+ uses the full `AgentLoadDesignResult` SDK type.
+
+## How approval and validation interact
+
+- Human approval is still the only gate: no canvas change happens before
+  the user clicks Approve.
+- Stale-proposal rejection is unchanged (stringify compare, short-circuit
+  before backup/load).
+- Backup ordering is unchanged (backup → `loadDesign`); tests assert the
+  call order via mock invocation order.
+- Validation is Unlayer's: the app surfaces native errors/audit, never
+  re-implements them.
+
+## M3 manual QA additions (no browser was run for M3)
+
+1. Prepare a valid edit → inspector shows “1 change across 1 block”,
+   counts line, one list item (`Paragraph text — Modified …`), and the
+   local-preview note; canvas unchanged.
+2. Approve → “Approved change applied successfully.” + “Last applied
+   change” panel (ok/loaded line, protected elements, audit or
+   “Audit unavailable”).
+3. Trigger a rejection (e.g. approve after breaking the design another
+   way, or approve twice quickly) → joined message in status + structured
+   error list with path/code inside the inspector; proposal retained.
+4. Stale flow still clears the proposal with the stale message.
+5. Payload probe (`<img src=x onerror=alert(1)>`) → inspector shows
+   escaped text (`&lt;img`), never a live tag; applied values hold
+   `&lt;img`.
+6. Resize to 360px width → change list wraps, no horizontal overflow.
+7. Tab through Approve/Discard with a screen reader → labels and
+   `role="alert"` rejection announced; `aria-label="Design changes"`
+   list discoverable.

@@ -17,7 +17,8 @@
  * - Staleness is still `JSON.stringify` equality, exactly as the app behaved
  *   in M1. A canonical hash replaces this in a later milestone.
  */
-import type { JSONTemplate } from './types';
+import { diffDesigns, type DesignDiff } from './designDiff';
+import type { AgentLoadDesignResult, JSONTemplate } from './types';
 
 /** Narrow structural view of the design subtree this transform touches. */
 interface ParagraphDesign {
@@ -52,6 +53,9 @@ export interface PreparedParagraphEdit {
   /** `JSON.stringify` snapshot of the design the proposal was based on. */
   baseDesign: string;
   candidateDesign: JSONTemplate;
+  /** Structured local diff. Computed at prepare time; Unlayer validation
+   * and audit run only after approval (see `approveEdit`). */
+  diff: DesignDiff;
 }
 
 /**
@@ -124,11 +128,14 @@ export function prepareParagraphEdit(
   paragraph.values.textJson = JSON.stringify(richText);
   paragraph.values.text = paragraph.values.text.replace(before, () => escapeHtml(after));
 
+  const candidateDesign = candidate as unknown as JSONTemplate;
+
   return {
     before,
     after,
     baseDesign: JSON.stringify(original),
-    candidateDesign: candidate as unknown as JSONTemplate,
+    candidateDesign,
+    diff: diffDesigns(original, candidateDesign),
   };
 }
 
@@ -137,20 +144,18 @@ export function isDesignChanged(current: unknown, baseDesign: string): boolean {
   return JSON.stringify(current) !== baseDesign;
 }
 
-/** Minimal agent surface the approval decision needs. */
+/** Minimal agent surface the approval decision needs. The full native
+ * result (errors, protectedElements, audit) is forwarded untouched so the
+ * inspector can display it after approval. */
 export interface AgentPort {
   getDesign: () => Promise<unknown>;
-  loadDesign: (design: JSONTemplate) => Promise<{
-    ok: boolean;
-    loaded: boolean;
-    errors?: Array<{ message: string }>;
-  }>;
+  loadDesign: (design: JSONTemplate) => Promise<AgentLoadDesignResult>;
 }
 
 export type ApproveOutcome =
-  | { status: 'applied' }
+  | { status: 'applied'; native: AgentLoadDesignResult }
   | { status: 'stale' }
-  | { status: 'rejected'; message: string }
+  | { status: 'rejected'; message: string; native: AgentLoadDesignResult }
   | { status: 'skipped'; reason: 'no-proposal' | 'already-applying' };
 
 /**
@@ -161,8 +166,10 @@ export type ApproveOutcome =
  * 2. Re-read the live design; mismatch with the base → `stale` (no I/O
  *    beyond the re-read, proposal must be discarded by the caller).
  * 3. Persist the pre-apply backup, then `loadDesign`.
- * 4. `!ok || !loaded` → `rejected` with the joined native error messages.
- * 5. Otherwise → `applied`.
+ * 4. `!ok || !loaded` → `rejected` with the joined native error messages
+ *    plus the full native result for the inspector.
+ * 5. Otherwise → `applied`, carrying the native result (protectedElements
+ *    and audit included) for display.
  *
  * Errors from the port (e.g. unavailable agent API) propagate to the
  * caller; nothing is backed up or loaded in that case.
@@ -200,8 +207,9 @@ export async function approveEdit(
     return {
       status: 'rejected',
       message: explanation || 'Unlayer rejected the proposed design.',
+      native: result,
     };
   }
 
-  return { status: 'applied' };
+  return { status: 'applied', native: result };
 }

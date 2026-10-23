@@ -2,6 +2,9 @@ import { useRef, useState } from 'react'
 import EmailEditor, { type EditorRef, type EmailEditorProps } from 'react-email-editor'
 import { describeAgent, getAgentDesign, loadAgentDesign } from './engine/unlayerAgent'
 import { approveEdit, prepareParagraphEdit, type PreparedParagraphEdit } from './engine/proposals'
+import type { AgentLoadDesignResult } from './engine/types'
+import { ChangeInspector, NativeResultPanel } from './shared/ChangeInspector'
+import { InspectorErrorBoundary } from './shared/ErrorBoundary'
 
 function App() {
   const editorRef = useRef<EditorRef>(null)
@@ -14,6 +17,8 @@ function App() {
   const [isApplying, setIsApplying] = useState(false)
   const approvalInProgress = useRef(false)
   const [proposal, setProposal] = useState<PreparedParagraphEdit | null>(null)
+  const [rejection, setRejection] = useState<AgentLoadDesignResult | null>(null)
+  const [lastApplied, setLastApplied] = useState<AgentLoadDesignResult | null>(null)
 
   const onReady: EmailEditorProps['onReady'] = (editor) => {
     void checkAgentConnection()
@@ -75,6 +80,8 @@ function App() {
 
   const prepareDemoEdit = async () => {
     setProposal(null)
+    setRejection(null)
+    setLastApplied(null)
     setProposalStatus('Preparing change...')
 
     try {
@@ -127,6 +134,7 @@ function App() {
 
       if (outcome.status === 'stale') {
         setProposal(null)
+        setRejection(null)
         setProposalStatus(
           'The design changed after this proposal was prepared. Prepare a new proposal.'
         )
@@ -134,9 +142,12 @@ function App() {
       }
 
       if (outcome.status === 'rejected') {
+        setRejection(outcome.native)
         throw new Error(outcome.message)
       }
 
+      setRejection(null)
+      setLastApplied(outcome.native)
       setProposal(null)
       setProposalStatus('Approved change applied successfully.')
     } catch (error) {
@@ -183,25 +194,21 @@ function App() {
         </div>
         <p role='status'>{proposalStatus}</p>
         {proposal && (
-          <div>
-            <h3>Proposed Change</h3>
-            <p><strong>Before:</strong> {proposal.before}</p>
-            <p><strong>After:</strong> {proposal.after}</p>
-            <button
-              type='button'
-              disabled={isApplying}
-              onClick={() => void approveProposal()}
-            >
-              {isApplying ? 'Applying...' : 'Approve Change'}
-            </button>
-            <button type='button' onClick={() => {
-              setProposal(null)
-              setProposalStatus('Proposal discarded.')
-            }}>
-              Discard Proposal
-            </button>
-          </div>
+          <InspectorErrorBoundary>
+            <ChangeInspector
+              proposal={proposal}
+              isApplying={isApplying}
+              rejection={rejection}
+              onApprove={() => void approveProposal()}
+              onDiscard={() => {
+                setProposal(null)
+                setRejection(null)
+                setProposalStatus('Proposal discarded.')
+              }}
+            />
+          </InspectorErrorBoundary>
         )}
+        {lastApplied && <NativeResultPanel title="Last applied change" result={lastApplied} />}
         <div><button type='button' disabled>Generate with AI (coming soon)</button></div>
         <p>AI generation is not connected yet. Manual editing is available below.</p>
       </section>
